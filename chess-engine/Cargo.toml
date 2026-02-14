@@ -1,0 +1,5 @@
+[package]
+name = "chess-engine"
+version = "0.1.0"
+edition = "2021"
+description = "A chess engine built for AlphaZero-style training"

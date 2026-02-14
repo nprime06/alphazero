@@ -1,0 +1,54 @@
+# AlphaZero Pipeline Configuration
+#
+# Copy and modify this file for your training run.
+# All paths are relative to project_dir unless absolute.
+#
+# Usage:
+#   python -m orchestrator.coordinator --config config.yaml
+
+project_dir: /home/willzhao/alphazero
+data_dir: data
+weights_dir: weights
+checkpoint_dir: checkpoints
+
+# Self-play
+# Number of games generated per iteration of the pipeline.
+selfplay_games_per_iteration: 500
+# MCTS simulations per move during self-play.
+selfplay_simulations: 800
+# CPU threads for the self-play binary.
+selfplay_threads: 8
+# Neural network inference batch size during self-play.
+selfplay_batch_size: 8
+
+# Training
+# Gradient steps per iteration (not total steps).
+train_steps_per_iteration: 1000
+# Mini-batch size (4096 matches the AlphaZero paper).
+train_batch_size: 4096
+# Network architecture: tiny, small, medium, or full.
+train_network: full
+# Number of GPUs for training.
+train_gpus: 1
+
+# Evaluation
+# Number of games to play when comparing models.
+eval_games: 40
+# MCTS simulations per move during evaluation.
+eval_simulations: 400
+# Win rate threshold for the new model to replace the current best.
+# 0.55 means the new model must win at least 55% of evaluation games.
+eval_win_threshold: 0.55
+
+# Pipeline
+# Maximum number of iterations (0 = run indefinitely).
+max_iterations: 0
+# Minimum games in replay buffer before the first training run.
+min_games_before_training: 100
+# Number of weight file versions to keep on disk.
+weights_keep_n: 10
+
+# Slurm (for cluster deployment)
+slurm_partition: mit_normal_gpu
+slurm_time_selfplay: "6:00:00"
+slurm_time_train: "12:00:00"

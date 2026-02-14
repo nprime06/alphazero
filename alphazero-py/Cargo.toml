@@ -1,0 +1,14 @@
+[package]
+name = "alphazero-py"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "alphazero_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+chess-engine = { path = "../chess-engine" }
+mcts = { path = "../mcts" }
+pyo3 = { version = "0.24", features = ["extension-module"] }
+tch = "0.23"

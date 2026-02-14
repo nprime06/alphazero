@@ -1,0 +1,13 @@
+[package]
+name = "self-play"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chess-engine = { path = "../chess-engine" }
+mcts = { path = "../mcts" }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+clap = { version = "4", features = ["derive"] }
+tch = "0.23"

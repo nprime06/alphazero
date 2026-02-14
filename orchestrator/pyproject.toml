@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "alphazero-orchestrator"
+version = "0.1.0"
+description = "AlphaZero training orchestrator"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "python-chess>=1.0",
+    "pyyaml>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

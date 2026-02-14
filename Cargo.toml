@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "alphazero-py",
+    "chess-engine",
+    "mcts",
+    "self-play",
+]
+resolver = "2"
