@@ -49,4 +49,4 @@ weights_keep_n: 10
 # Slurm (for cluster deployment)
 slurm_partition: mit_normal_gpu
 slurm_time_selfplay: "6:00:00"
-slurm_time_train: "12:00:00"
+slurm_time_train: "6:00:00"
