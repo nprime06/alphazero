@@ -1,0 +1,34 @@
+# AlphaZero Smoke Test Configuration
+#
+# Reduced values to fit several iterations into a 6-hour window
+# with a tiny network. Use this for your first run to verify
+# the pipeline works end-to-end.
+#
+# Usage:
+#   ./training/scripts/submit_coordinator.sh \
+#       --config orchestrator/orchestrator/config_smoke.yaml \
+#       --network tiny --iterations 3
+
+project_dir: /home/willzhao/alphazero
+
+# Self-play (reduced)
+selfplay_games_per_iteration: 50
+selfplay_simulations: 200
+selfplay_threads: 8
+selfplay_batch_size: 8
+
+# Training (reduced)
+train_steps_per_iteration: 200
+train_batch_size: 256
+train_network: tiny
+train_gpus: 1
+
+# Evaluation (reduced)
+eval_games: 10
+eval_simulations: 100
+eval_win_threshold: 0.55
+
+# Pipeline
+max_iterations: 3
+min_games_before_training: 20
+weights_keep_n: 10
