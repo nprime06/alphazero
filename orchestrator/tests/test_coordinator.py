@@ -55,7 +55,7 @@ class TestPipelineConfig:
         # Slurm defaults
         assert config.slurm_partition == "mit_normal_gpu"
         assert config.slurm_time_selfplay == "6:00:00"
-        assert config.slurm_time_train == "12:00:00"
+        assert config.slurm_time_train == "6:00:00"
 
         # Runtime
         assert config.dry_run is False

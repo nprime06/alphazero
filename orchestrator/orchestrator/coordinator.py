@@ -122,7 +122,7 @@ class PipelineConfig:
     # Slurm
     slurm_partition: str = "mit_normal_gpu"
     slurm_time_selfplay: str = "6:00:00"
-    slurm_time_train: str = "12:00:00"
+    slurm_time_train: str = "6:00:00"
 
     # Runtime
     dry_run: bool = False
@@ -413,14 +413,20 @@ class Coordinator:
             self.state.iteration += 1
             iter_start = time.time()
             logger.info(
-                "=== Iteration %d ===", self.state.iteration
+                "========== Iteration %d ==========",
+                self.state.iteration,
             )
 
             # Step 1: Self-play
+            logger.info(
+                "--- Phase: Self-play (%d games, %d sims/move) ---",
+                self.config.selfplay_games_per_iteration,
+                self.config.selfplay_simulations,
+            )
             self._run_selfplay()
             game_count = self._count_games()
             self.state.total_games = game_count
-            logger.info("Replay buffer: %d games", game_count)
+            logger.info("Replay buffer: %d total games", game_count)
 
             # Wait for minimum games before first training
             if game_count < self.config.min_games_before_training:
@@ -433,9 +439,19 @@ class Coordinator:
                 continue
 
             # Step 2: Train
+            logger.info(
+                "--- Phase: Training (%d steps, batch=%d) ---",
+                self.config.train_steps_per_iteration,
+                self.config.train_batch_size,
+            )
             self._run_training()
 
             # Step 3: Evaluate
+            logger.info(
+                "--- Phase: Evaluation (%d games, %d sims/move) ---",
+                self.config.eval_games,
+                self.config.eval_simulations,
+            )
             promoted = self._run_evaluation()
 
             # Step 4: Maybe promote
@@ -511,18 +527,17 @@ class Coordinator:
         ]
 
         logger.info("Running self-play: %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Stream output in real-time (no capture) so progress is visible
+        # in the Slurm log as games complete.
+        result = subprocess.run(cmd)
 
         if result.returncode != 0:
             logger.error(
-                "Self-play failed (exit code %d):\n%s",
-                result.returncode,
-                result.stderr,
+                "Self-play failed with exit code %d", result.returncode
             )
         else:
             logger.info("Self-play completed successfully")
-            if result.stdout:
-                logger.info("Self-play output:\n%s", result.stdout)
 
     # ------------------------------------------------------------------ #
     # Training (local mode)
