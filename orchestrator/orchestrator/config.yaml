@@ -1,15 +1,13 @@
 # AlphaZero Pipeline Configuration
 #
-# Copy and modify this file for your training run.
-# All paths are relative to project_dir unless absolute.
+# Each coordinator run is self-contained in its own run directory.
+# Data, weights, checkpoints, and tensorboard logs are stored there.
 #
 # Usage:
-#   python -m orchestrator.coordinator --config config.yaml
+#   ./training/scripts/submit_coordinator.sh --config orchestrator/orchestrator/config.yaml
+#   ./training/scripts/submit_coordinator.sh --config orchestrator/orchestrator/config.yaml --network tiny --iterations 5
 
 project_dir: /home/willzhao/alphazero
-data_dir: data
-weights_dir: weights
-checkpoint_dir: checkpoints
 
 # Self-play
 # Number of games generated per iteration of the pipeline.

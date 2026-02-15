@@ -1,31 +1,41 @@
 """AlphaZero training pipeline coordinator.
 
 Orchestrates the full training loop:
-1. Launch self-play workers to generate games
-2. Wait for enough new data in the replay buffer
-3. Launch training job
-4. Export new weights after training
-5. Evaluate new model vs current best
-6. If new model wins >55%: promote to best model
-7. Repeat
+1. Bootstrap a random-init model (if starting fresh)
+2. Launch self-play workers to generate games
+3. Wait for enough new data in the replay buffer
+4. Launch training job
+5. Export new weights after training
+6. Evaluate new model vs current best
+7. If new model wins >55%: promote to best model
+8. Repeat
 
-The coordinator runs on a login node and submits Slurm jobs for
-self-play and training. It uses the filesystem for coordination:
-- Replay buffer directory for game data
-- Weights directory for model versions
-- Checkpoint directory for training state
+Each coordinator run is self-contained in a run directory::
+
+    runs/coord_20250212_143000/
+    ├── config.yaml          # snapshot of config used
+    ├── pipeline_state.yaml  # iteration counter, best model version
+    ├── weights/             # TorchScript model versions
+    ├── data/                # self-play game files (.msgpack)
+    ├── checkpoints/         # training state (optimizer, scheduler, etc.)
+    └── tensorboard/         # training metrics
 
 Usage::
 
-    python -m orchestrator.coordinator --config config.yaml
+    # Submit to Slurm (recommended):
+    ./training/scripts/submit_coordinator.sh --config orchestrator/orchestrator/config.yaml
 
-    # Or with defaults:
-    python -m orchestrator.coordinator --data-dir ./data --weights-dir ./weights
+    # Or run directly on a GPU node:
+    python -m orchestrator.coordinator --config orchestrator/orchestrator/config.yaml
+
+    # Resume an existing run:
+    python -m orchestrator.coordinator --run-dir runs/coord_20250212_143000
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
 import shutil
 import subprocess
@@ -79,6 +89,10 @@ class PipelineConfig:
     """
 
     project_dir: str = "/home/willzhao/alphazero"
+    run_dir: Optional[str] = None
+
+    # These are only used when run_dir is NOT set (legacy mode).
+    # When run_dir is set, data/weights/checkpoints are subdirs of it.
     data_dir: str = "data"
     weights_dir: str = "weights"
     checkpoint_dir: str = "checkpoints"
@@ -247,21 +261,39 @@ class Coordinator:
 
     def __init__(self, config: PipelineConfig) -> None:
         self.config = config
-
-        # Resolve directories
-        self._data_dir = config.resolve_path(config.data_dir)
-        self._weights_dir = config.resolve_path(config.weights_dir)
-        self._checkpoint_dir = config.resolve_path(config.checkpoint_dir)
         self._project_dir = Path(config.project_dir)
 
+        # Resolve directories -- run_dir makes everything self-contained
+        if config.run_dir:
+            self._run_dir = Path(config.run_dir)
+            self._data_dir = self._run_dir / "data"
+            self._weights_dir = self._run_dir / "weights"
+            self._checkpoint_dir = self._run_dir / "checkpoints"
+            self._tensorboard_dir = self._run_dir / "tensorboard"
+            self._state_path = self._run_dir / "pipeline_state.yaml"
+        else:
+            self._run_dir = None
+            self._data_dir = config.resolve_path(config.data_dir)
+            self._weights_dir = config.resolve_path(config.weights_dir)
+            self._checkpoint_dir = config.resolve_path(config.checkpoint_dir)
+            self._tensorboard_dir = None
+            self._state_path = self._checkpoint_dir / "pipeline_state.yaml"
+
         # Ensure directories exist
-        self._data_dir.mkdir(parents=True, exist_ok=True)
-        self._weights_dir.mkdir(parents=True, exist_ok=True)
-        self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        for d in [self._data_dir, self._weights_dir, self._checkpoint_dir]:
+            d.mkdir(parents=True, exist_ok=True)
+        if self._tensorboard_dir:
+            self._tensorboard_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save config snapshot into run dir (for reproducibility)
+        if self._run_dir:
+            self._save_config_snapshot()
 
         # Load or initialize pipeline state
-        self._state_path = self._checkpoint_dir / "pipeline_state.yaml"
         self.state = PipelineState.load(str(self._state_path))
+
+        # Bootstrap: create initial random model if none exists
+        self._bootstrap_model()
 
         logger.info(
             "Coordinator initialized: iteration=%d, best_model=v%d, "
@@ -271,6 +303,75 @@ class Coordinator:
             self.state.total_games,
             self.state.total_train_steps,
         )
+        if self._run_dir:
+            logger.info("Run directory: %s", self._run_dir)
+
+    # ------------------------------------------------------------------ #
+    # Bootstrap
+    # ------------------------------------------------------------------ #
+
+    def _bootstrap_model(self) -> None:
+        """Create a random-init model if no model exists yet.
+
+        Solves the chicken-and-egg problem: self-play needs a model,
+        but training needs self-play data. On first run, we create a
+        randomly initialized model so self-play can start generating
+        games immediately.
+        """
+        if self._get_best_model_path() is not None:
+            return  # Already have a model
+
+        if self.config.dry_run:
+            logger.info("[DRY RUN] Would bootstrap initial model")
+            return
+
+        logger.info(
+            "No model found. Bootstrapping random-init model "
+            "(%s preset)...",
+            self.config.train_network,
+        )
+
+        import torch
+        from neural.config import NetworkConfig
+        from neural.network import AlphaZeroNetwork
+        from neural.export import export_torchscript
+
+        configs = {
+            "tiny": NetworkConfig.tiny,
+            "small": NetworkConfig.small,
+            "medium": NetworkConfig.medium,
+            "full": NetworkConfig.full,
+        }
+        factory = configs.get(self.config.train_network, NetworkConfig.full)
+        net_config = factory()
+
+        model = AlphaZeroNetwork(net_config)
+
+        model_path = self._weights_dir / "model_v000001.pt"
+        export_torchscript(model, str(model_path))
+
+        # Write latest.txt so WeightPublisher/WeightWatcher can find it
+        latest_file = self._weights_dir / "latest.txt"
+        latest_file.write_text("1")
+
+        # Record as current best
+        self.state.best_model_version = 1
+        self._save_state()
+
+        logger.info("Bootstrap model created: %s", model_path)
+
+    def _save_config_snapshot(self) -> None:
+        """Save a copy of the config into the run directory.
+
+        Only written once (on first creation). If the config file already
+        exists (e.g., resuming a run), it is not overwritten.
+        """
+        config_path = self._run_dir / "config.yaml"
+        if config_path.exists():
+            return
+        with open(config_path, "w") as f:
+            yaml.dump(asdict(self.config), f, default_flow_style=False)
+        logger.info("Config snapshot saved: %s", config_path)
 
     # ------------------------------------------------------------------ #
     # Main loop
@@ -399,17 +500,11 @@ class Coordinator:
             )
             return
 
-        # Output file for this iteration's games
-        output_path = (
-            self._data_dir
-            / f"games_iter{self.state.iteration:04d}.msgpack"
-        )
-
         cmd = [
             str(selfplay_binary),
             "--model", str(model_path),
             "--games", str(self.config.selfplay_games_per_iteration),
-            "--output", str(output_path),
+            "--output", str(self._data_dir),
             "--sims", str(self.config.selfplay_simulations),
             "--threads", str(self.config.selfplay_threads),
             "--batch-size", str(self.config.selfplay_batch_size),
@@ -726,47 +821,44 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  # Run with a YAML config file:
-  python -m orchestrator.coordinator --config config.yaml
+  # New run with a YAML config:
+  python -m orchestrator.coordinator --config orchestrator/orchestrator/config.yaml
 
-  # Run with command-line overrides:
-  python -m orchestrator.coordinator --project-dir . --data-dir ./data
+  # Resume an existing run:
+  python -m orchestrator.coordinator --run-dir runs/coord_20250212_143000
 
-  # Dry run (shows what would happen):
+  # Smoke test (tiny network, 5 iterations):
+  python -m orchestrator.coordinator --network tiny --iterations 5
+
+  # Dry run:
   python -m orchestrator.coordinator --config config.yaml --dry-run
 """,
     )
     parser.add_argument(
-        "--config", type=str, help="YAML config file"
+        "--run-dir", type=str, default=None,
+        help="Run directory. Resumes if it exists, creates if new. "
+        "Auto-created with timestamp if omitted.",
     )
     parser.add_argument(
-        "--project-dir", type=str, default=".",
-        help="Root project directory (default: .)",
+        "--config", type=str,
+        help="YAML config file (hyperparameters, Slurm settings, etc.)",
     )
     parser.add_argument(
-        "--data-dir", type=str, default="data",
-        help="Self-play game data directory (default: data)",
+        "--project-dir", type=str, default=None,
+        help="Root project directory (default: current directory)",
     )
     parser.add_argument(
-        "--weights-dir", type=str, default="weights",
-        help="Model weights directory (default: weights)",
+        "--iterations", type=int, default=None,
+        help="Max iterations, 0=infinite (default: from config or 0)",
     )
     parser.add_argument(
-        "--checkpoint-dir", type=str, default="checkpoints",
-        help="Training checkpoint directory (default: checkpoints)",
-    )
-    parser.add_argument(
-        "--iterations", type=int, default=0,
-        help="Max iterations, 0=infinite (default: 0)",
-    )
-    parser.add_argument(
-        "--network", type=str, default="full",
+        "--network", type=str, default=None,
         choices=["tiny", "small", "medium", "full"],
-        help="Network preset (default: full)",
+        help="Network preset (default: from config or full)",
     )
     parser.add_argument(
-        "--gpus", type=int, default=1,
-        help="Number of GPUs for training (default: 1)",
+        "--gpus", type=int, default=None,
+        help="Number of GPUs for training (default: from config or 1)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -786,36 +878,31 @@ examples:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Build config
+    # Build config: start from YAML or defaults
     if args.config:
         config = PipelineConfig.from_yaml(args.config)
-        # CLI args override YAML values
-        if args.project_dir != ".":
-            config.project_dir = args.project_dir
-        if args.data_dir != "data":
-            config.data_dir = args.data_dir
-        if args.weights_dir != "weights":
-            config.weights_dir = args.weights_dir
-        if args.checkpoint_dir != "checkpoints":
-            config.checkpoint_dir = args.checkpoint_dir
-        if args.iterations != 0:
-            config.max_iterations = args.iterations
-        if args.network != "full":
-            config.train_network = args.network
-        if args.gpus != 1:
-            config.train_gpus = args.gpus
     else:
-        config = PipelineConfig(
-            project_dir=args.project_dir,
-            data_dir=args.data_dir,
-            weights_dir=args.weights_dir,
-            checkpoint_dir=args.checkpoint_dir,
-            max_iterations=args.iterations,
-            train_network=args.network,
-            train_gpus=args.gpus,
-        )
+        config = PipelineConfig()
 
+    # CLI overrides
+    if args.project_dir is not None:
+        config.project_dir = args.project_dir
+    if args.iterations is not None:
+        config.max_iterations = args.iterations
+    if args.network is not None:
+        config.train_network = args.network
+    if args.gpus is not None:
+        config.train_gpus = args.gpus
     config.dry_run = args.dry_run
+
+    # Run directory: use provided, or auto-create with timestamp
+    if args.run_dir:
+        config.run_dir = args.run_dir
+    elif config.run_dir is None:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        config.run_dir = str(
+            Path(config.project_dir) / "runs" / f"coord_{timestamp}"
+        )
 
     # Run the pipeline
     coordinator = Coordinator(config)
