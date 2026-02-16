@@ -65,6 +65,7 @@ class PipelineConfig:
 
         selfplay_games_per_iteration: Number of games per self-play round.
         selfplay_simulations: MCTS simulations per move.
+        selfplay_max_moves: Max moves per game before forced draw.
         selfplay_threads: CPU threads per self-play worker.
         selfplay_batch_size: Inference batch size.
 
@@ -98,14 +99,15 @@ class PipelineConfig:
     checkpoint_dir: str = "checkpoints"
 
     # Self-play
-    selfplay_games_per_iteration: int = 500
-    selfplay_simulations: int = 800
+    selfplay_games_per_iteration: int = 250
+    selfplay_simulations: int = 400
+    selfplay_max_moves: int = 300
     selfplay_threads: int = 8
     selfplay_batch_size: int = 8
 
     # Training
-    train_steps_per_iteration: int = 1000
-    train_batch_size: int = 4096
+    train_steps_per_iteration: int = 500
+    train_batch_size: int = 256
     train_network: str = "full"
     train_gpus: int = 1
 
@@ -116,7 +118,7 @@ class PipelineConfig:
 
     # Pipeline
     max_iterations: int = 0
-    min_games_before_training: int = 100
+    min_games_before_training: int = 50
     weights_keep_n: int = 10
 
     # Slurm
@@ -522,6 +524,7 @@ class Coordinator:
             "--games", str(self.config.selfplay_games_per_iteration),
             "--output", str(self._data_dir),
             "--sims", str(self.config.selfplay_simulations),
+            "--max-moves", str(self.config.selfplay_max_moves),
             "--threads", str(self.config.selfplay_threads),
             "--batch-size", str(self.config.selfplay_batch_size),
         ]

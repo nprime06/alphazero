@@ -11,9 +11,11 @@ project_dir: /home/willzhao/alphazero
 
 # Self-play
 # Number of games generated per iteration of the pipeline.
-selfplay_games_per_iteration: 500
+selfplay_games_per_iteration: 250
 # MCTS simulations per move during self-play.
-selfplay_simulations: 800
+selfplay_simulations: 400
+# Max moves per game (caps pointless long draws from weak models).
+selfplay_max_moves: 300
 # CPU threads for the self-play binary.
 selfplay_threads: 8
 # Neural network inference batch size during self-play.
@@ -21,9 +23,9 @@ selfplay_batch_size: 8
 
 # Training
 # Gradient steps per iteration (not total steps).
-train_steps_per_iteration: 1000
-# Mini-batch size (4096 matches the AlphaZero paper).
-train_batch_size: 4096
+train_steps_per_iteration: 500
+# Mini-batch size.
+train_batch_size: 256
 # Network architecture: tiny, small, medium, or full.
 train_network: full
 # Number of GPUs for training.
@@ -42,7 +44,7 @@ eval_win_threshold: 0.55
 # Maximum number of iterations (0 = run indefinitely).
 max_iterations: 0
 # Minimum games in replay buffer before the first training run.
-min_games_before_training: 100
+min_games_before_training: 50
 # Number of weight file versions to keep on disk.
 weights_keep_n: 10
 

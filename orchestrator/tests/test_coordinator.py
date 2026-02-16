@@ -31,14 +31,15 @@ class TestPipelineConfig:
         assert config.checkpoint_dir == "checkpoints"
 
         # Self-play defaults
-        assert config.selfplay_games_per_iteration == 500
-        assert config.selfplay_simulations == 800
+        assert config.selfplay_games_per_iteration == 250
+        assert config.selfplay_simulations == 400
+        assert config.selfplay_max_moves == 300
         assert config.selfplay_threads == 8
         assert config.selfplay_batch_size == 8
 
         # Training defaults
-        assert config.train_steps_per_iteration == 1000
-        assert config.train_batch_size == 4096
+        assert config.train_steps_per_iteration == 500
+        assert config.train_batch_size == 256
         assert config.train_network == "full"
         assert config.train_gpus == 1
 
@@ -49,7 +50,7 @@ class TestPipelineConfig:
 
         # Pipeline defaults
         assert config.max_iterations == 0
-        assert config.min_games_before_training == 100
+        assert config.min_games_before_training == 50
         assert config.weights_keep_n == 10
 
         # Slurm defaults
@@ -87,7 +88,7 @@ class TestPipelineConfig:
 
         # Non-specified values should keep their defaults
         assert config.weights_dir == "weights"
-        assert config.train_batch_size == 4096
+        assert config.train_batch_size == 256
 
     def test_from_yaml_ignores_unknown_keys(self, tmp_path):
         """Unknown keys in the YAML file are silently ignored."""
@@ -111,7 +112,7 @@ class TestPipelineConfig:
 
         config = PipelineConfig.from_yaml(str(config_file))
         assert config.project_dir == "/home/willzhao/alphazero"
-        assert config.selfplay_games_per_iteration == 500
+        assert config.selfplay_games_per_iteration == 250
 
     def test_resolve_path_relative(self):
         """Relative paths are resolved against project_dir."""

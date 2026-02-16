@@ -14,6 +14,7 @@ project_dir: /home/willzhao/alphazero
 # Self-play (reduced)
 selfplay_games_per_iteration: 50
 selfplay_simulations: 200
+selfplay_max_moves: 200
 selfplay_threads: 8
 selfplay_batch_size: 8
 
