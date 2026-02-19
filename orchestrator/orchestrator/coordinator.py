@@ -68,7 +68,10 @@ class PipelineConfig:
         selfplay_max_moves: Max moves per game before forced draw.
         selfplay_parallel_games: Number of games to play concurrently.
         selfplay_threads: CPU threads per game (for within-game MCTS parallelism).
-        selfplay_batch_size: NN inference batch size (should be >= parallel_games).
+        selfplay_batch_size: NN inference batch size.  Auto-calculated as
+            ``parallel_games * threads`` if left at 0.  Must match the number
+            of concurrent request sources so the inference server fires
+            batches immediately instead of waiting for a timeout.
         selfplay_fp16: If True, export models in FP16 for faster GPU inference.
 
         train_steps_per_iteration: Training steps per iteration.
@@ -106,7 +109,7 @@ class PipelineConfig:
     selfplay_max_moves: int = 300
     selfplay_parallel_games: int = 16
     selfplay_threads: int = 1
-    selfplay_batch_size: int = 32
+    selfplay_batch_size: int = 0
     selfplay_fp16: bool = True
 
     # Training
@@ -526,6 +529,16 @@ class Coordinator:
             )
             return
 
+        # Batch size should equal the number of concurrent NN request sources
+        # (parallel_games * threads) so the inference server fires immediately
+        # instead of waiting for a timeout.
+        batch_size = self.config.selfplay_batch_size
+        if batch_size <= 0:
+            batch_size = (
+                self.config.selfplay_parallel_games
+                * self.config.selfplay_threads
+            )
+
         cmd = [
             str(selfplay_binary),
             "--model", str(model_path),
@@ -535,7 +548,7 @@ class Coordinator:
             "--max-moves", str(self.config.selfplay_max_moves),
             "--parallel-games", str(self.config.selfplay_parallel_games),
             "--threads", str(self.config.selfplay_threads),
-            "--batch-size", str(self.config.selfplay_batch_size),
+            "--batch-size", str(batch_size),
         ]
 
         logger.info("Running self-play: %s", " ".join(cmd))

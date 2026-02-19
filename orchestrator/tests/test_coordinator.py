@@ -36,7 +36,7 @@ class TestPipelineConfig:
         assert config.selfplay_max_moves == 300
         assert config.selfplay_parallel_games == 16
         assert config.selfplay_threads == 1
-        assert config.selfplay_batch_size == 32
+        assert config.selfplay_batch_size == 0
         assert config.selfplay_fp16 is True
 
         # Training defaults

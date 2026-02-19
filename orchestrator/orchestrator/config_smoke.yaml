@@ -17,7 +17,7 @@ selfplay_simulations: 200
 selfplay_max_moves: 200
 selfplay_parallel_games: 8
 selfplay_threads: 1
-selfplay_batch_size: 16
+# selfplay_batch_size auto-calculated as parallel_games * threads = 8
 selfplay_fp16: true
 
 # Training (reduced)

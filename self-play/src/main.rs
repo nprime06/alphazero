@@ -242,7 +242,10 @@ fn main() {
 
         // Scale max_wait based on parallelism: more concurrent games means
         // requests arrive faster, so we can use a shorter wait before batching.
-        let max_wait_ms: u64 = if args.parallel_games > 1 { 5 } else { 50 };
+        // With parallel_games > 1, batch_size should equal parallel_games * threads
+        // so the batch fills immediately without needing a long timeout.  Keep
+        // max_wait at 1ms as a safety fallback for thread scheduling jitter.
+        let max_wait_ms: u64 = if args.parallel_games > 1 { 1 } else { 50 };
         let server = InferenceServer::new(server_model, args.batch_size, max_wait_ms);
 
         if args.parallel_games > 1 {

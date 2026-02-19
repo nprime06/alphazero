@@ -25,8 +25,10 @@ selfplay_parallel_games: 16
 # With parallel_games > 1, keep this at 1 unless you have many CPUs.
 # Total MCTS workers = parallel_games * threads.
 selfplay_threads: 1
-# Neural network inference batch size. Should be >= parallel_games * threads.
-selfplay_batch_size: 32
+# Neural network inference batch size.  Set to 0 (default) to auto-calculate
+# as parallel_games * threads so the inference server fires batches immediately
+# instead of waiting for a timeout.  Only set manually to override.
+# selfplay_batch_size: 0
 # Export models in FP16 for ~2x faster GPU inference via Tensor Cores.
 # Disable for CPU-only inference (FP16 is slower on CPU).
 selfplay_fp16: true
