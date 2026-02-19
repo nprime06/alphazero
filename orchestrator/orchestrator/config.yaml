@@ -16,10 +16,20 @@ selfplay_games_per_iteration: 250
 selfplay_simulations: 400
 # Max moves per game (caps pointless long draws from weak models).
 selfplay_max_moves: 300
-# CPU threads for the self-play binary.
-selfplay_threads: 8
-# Neural network inference batch size during self-play.
-selfplay_batch_size: 8
+# Number of games played concurrently (main throughput lever).
+# Each game sends NN requests to a shared InferenceServer which batches
+# them for the GPU. More parallel games = better GPU utilization.
+# Tune based on model size: tiny=16-32, small=8-16, medium=4-8, full=2-4.
+selfplay_parallel_games: 16
+# CPU threads per game (for within-game MCTS parallelism).
+# With parallel_games > 1, keep this at 1 unless you have many CPUs.
+# Total MCTS workers = parallel_games * threads.
+selfplay_threads: 1
+# Neural network inference batch size. Should be >= parallel_games * threads.
+selfplay_batch_size: 32
+# Export models in FP16 for ~2x faster GPU inference via Tensor Cores.
+# Disable for CPU-only inference (FP16 is slower on CPU).
+selfplay_fp16: true
 
 # Training
 # Gradient steps per iteration (not total steps).

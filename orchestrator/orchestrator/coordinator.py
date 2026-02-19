@@ -66,8 +66,10 @@ class PipelineConfig:
         selfplay_games_per_iteration: Number of games per self-play round.
         selfplay_simulations: MCTS simulations per move.
         selfplay_max_moves: Max moves per game before forced draw.
-        selfplay_threads: CPU threads per self-play worker.
-        selfplay_batch_size: Inference batch size.
+        selfplay_parallel_games: Number of games to play concurrently.
+        selfplay_threads: CPU threads per game (for within-game MCTS parallelism).
+        selfplay_batch_size: NN inference batch size (should be >= parallel_games).
+        selfplay_fp16: If True, export models in FP16 for faster GPU inference.
 
         train_steps_per_iteration: Training steps per iteration.
         train_batch_size: Training batch size.
@@ -102,8 +104,10 @@ class PipelineConfig:
     selfplay_games_per_iteration: int = 250
     selfplay_simulations: int = 400
     selfplay_max_moves: int = 300
-    selfplay_threads: int = 8
-    selfplay_batch_size: int = 8
+    selfplay_parallel_games: int = 16
+    selfplay_threads: int = 1
+    selfplay_batch_size: int = 32
+    selfplay_fp16: bool = True
 
     # Training
     train_steps_per_iteration: int = 500
@@ -336,7 +340,7 @@ class Coordinator:
         import torch
         from neural.config import NetworkConfig
         from neural.network import AlphaZeroNetwork
-        from neural.export import export_torchscript
+        from neural.export import export_torchscript, export_fp16
 
         configs = {
             "tiny": NetworkConfig.tiny,
@@ -350,7 +354,11 @@ class Coordinator:
         model = AlphaZeroNetwork(net_config)
 
         model_path = self._weights_dir / "model_v000001.pt"
-        export_torchscript(model, str(model_path))
+        if self.config.selfplay_fp16:
+            export_fp16(model, str(model_path))
+            logger.info("Exported as FP16 for GPU inference")
+        else:
+            export_torchscript(model, str(model_path))
 
         # Write latest.txt so WeightPublisher/WeightWatcher can find it
         latest_file = self._weights_dir / "latest.txt"
@@ -525,6 +533,7 @@ class Coordinator:
             "--output", str(self._data_dir),
             "--sims", str(self.config.selfplay_simulations),
             "--max-moves", str(self.config.selfplay_max_moves),
+            "--parallel-games", str(self.config.selfplay_parallel_games),
             "--threads", str(self.config.selfplay_threads),
             "--batch-size", str(self.config.selfplay_batch_size),
         ]
@@ -629,6 +638,7 @@ class Coordinator:
         publisher = WeightPublisher(
             str(self._weights_dir),
             keep_n=self.config.weights_keep_n,
+            fp16=self.config.selfplay_fp16,
         )
         weight_path = publisher.publish(trainer.model, step=trainer.step)
         logger.info("Weights published: %s (v%d)", weight_path, publisher.current_version)

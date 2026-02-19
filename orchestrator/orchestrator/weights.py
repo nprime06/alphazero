@@ -51,10 +51,11 @@ class WeightPublisher:
         keep_n: Number of weight versions to keep. Older versions are deleted.
     """
 
-    def __init__(self, weights_dir: str, keep_n: int = 5) -> None:
+    def __init__(self, weights_dir: str, keep_n: int = 5, fp16: bool = False) -> None:
         self._weights_dir = Path(weights_dir)
         self._weights_dir.mkdir(parents=True, exist_ok=True)
         self._keep_n = keep_n
+        self._fp16 = fp16
 
         # Recover version counter from latest.txt if it exists (allows
         # restarting the coordinator without resetting the version sequence).
@@ -89,22 +90,26 @@ class WeightPublisher:
 
         model_path = self._weights_dir / f"model_v{version:06d}.pt"
 
-        # Set to eval mode for deterministic BatchNorm behavior during tracing
-        was_training = model.training
-        model.eval()
+        if self._fp16:
+            from neural.export import export_fp16
+            export_fp16(model, str(model_path))
+        else:
+            # Set to eval mode for deterministic BatchNorm behavior during tracing
+            was_training = model.training
+            model.eval()
 
-        # Create dummy input for tracing -- shape (1, 119, 8, 8) matches the
-        # standard AlphaZero chess encoding
-        device = next(model.parameters()).device
-        dummy_input = torch.randn(1, 119, 8, 8, device=device)
+            # Create dummy input for tracing -- shape (1, 119, 8, 8) matches the
+            # standard AlphaZero chess encoding
+            device = next(model.parameters()).device
+            dummy_input = torch.randn(1, 119, 8, 8, device=device)
 
-        with torch.no_grad():
-            traced = torch.jit.trace(model, dummy_input)
-        traced.save(str(model_path))
+            with torch.no_grad():
+                traced = torch.jit.trace(model, dummy_input)
+            traced.save(str(model_path))
 
-        # Restore original training mode
-        if was_training:
-            model.train()
+            # Restore original training mode
+            if was_training:
+                model.train()
 
         # Atomically update latest.txt: write to a temp file in the same
         # directory, then rename. os.replace() is atomic on POSIX and

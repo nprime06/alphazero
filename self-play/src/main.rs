@@ -11,13 +11,21 @@
 //! self-play --model model.pt --games 100 --output ./data/ --sims 800
 //! ```
 //!
-//! For multi-threaded parallel MCTS (recommended on GPU nodes):
+//! For multi-game parallelism (recommended on GPU nodes):
+//!
+//! ```text
+//! self-play --model model.pt --games 250 --parallel-games 16 --batch-size 32
+//! ```
+//!
+//! For within-game parallel MCTS only:
 //!
 //! ```text
 //! self-play --model model.pt --games 100 --threads 4 --batch-size 8
 //! ```
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use clap::Parser;
@@ -77,9 +85,13 @@ struct Args {
     #[arg(long, default_value = "2.5")]
     c_puct: f32,
 
-    /// Number of search threads for parallel MCTS
+    /// Number of search threads for parallel MCTS (per game)
     #[arg(long, default_value = "1")]
     threads: u32,
+
+    /// Number of games to play concurrently
+    #[arg(long, default_value = "1")]
+    parallel_games: u32,
 
     /// Batch size for NN inference
     #[arg(long, default_value = "8")]
@@ -192,10 +204,11 @@ fn main() {
         .expect("Failed to create replay buffer directory");
 
     eprintln!(
-        "[INFO] Config: games={}, sims={}, threads={}, batch_size={}, c_puct={}, temp_threshold={}, max_moves={}, noise={}",
+        "[INFO] Config: games={}, sims={}, threads={}, parallel_games={}, batch_size={}, c_puct={}, temp_threshold={}, max_moves={}, noise={}",
         args.games,
         args.sims,
         args.threads,
+        args.parallel_games,
         args.batch_size,
         args.c_puct,
         args.temperature_threshold,
@@ -205,69 +218,148 @@ fn main() {
     eprintln!("[INFO] Output directory: {}", args.output.display());
     eprintln!();
 
-    // Track statistics.
-    let mut stats = ResultStats::new();
-    let mut total_moves: u64 = 0;
-    let mut total_samples: u64 = 0;
+    // Track statistics (atomic for thread-safe access).
+    let stats = Mutex::new(ResultStats::new());
+    let total_moves = AtomicU64::new(0);
+    let total_samples = AtomicU64::new(0);
     let session_start = Instant::now();
 
-    if args.threads > 1 {
+    if args.parallel_games > 1 || args.threads > 1 {
         // =====================================================================
-        // Parallel mode: use InferenceServer + search_parallel
+        // Batched mode: use InferenceServer for GPU batching.
+        //
+        // Two sub-modes:
+        // - parallel_games > 1: multiple games concurrently (main speedup)
+        // - threads > 1 only: single game with multi-threaded MCTS
         // =====================================================================
-        eprintln!(
-            "[INFO] Running in parallel mode ({} threads, batch_size={})",
-            args.threads, args.batch_size
-        );
 
-        // Load a separate model for the inference server (it takes ownership).
+        // Load model for the inference server (it takes ownership).
         let server_model = NnModel::load(
             args.model.to_str().expect("Model path is not valid UTF-8"),
             device,
         )
         .expect("Failed to load model for inference server");
 
-        let max_wait_ms: u64 = 50;
+        // Scale max_wait based on parallelism: more concurrent games means
+        // requests arrive faster, so we can use a shorter wait before batching.
+        let max_wait_ms: u64 = if args.parallel_games > 1 { 5 } else { 50 };
         let server = InferenceServer::new(server_model, args.batch_size, max_wait_ms);
 
-        for game_idx in 0..args.games {
-            let game_start = Instant::now();
-
-            let record = play_game_parallel(
-                &self_play_config,
-                &server,
-                args.threads as usize,
+        if args.parallel_games > 1 {
+            // -----------------------------------------------------------------
+            // Multi-game parallel mode: N games running concurrently
+            // -----------------------------------------------------------------
+            let total_workers = args.parallel_games * args.threads;
+            eprintln!(
+                "[INFO] Running {} games in parallel ({} threads/game, {} total workers, batch_size={})",
+                args.parallel_games, args.threads, total_workers, args.batch_size
             );
-            let samples = extract_samples(&record);
 
-            // Write to replay buffer.
-            buffer
-                .add_game(&samples)
-                .expect("Failed to write game to replay buffer");
+            // Work-stealing counter: each thread grabs the next game index.
+            let game_counter = AtomicU32::new(0);
 
-            // Update statistics.
-            let game_time = game_start.elapsed().as_secs_f64();
-            let elapsed_total = session_start.elapsed().as_secs_f64();
-            let games_per_hour = if elapsed_total > 0.0 {
-                (game_idx as f64 + 1.0) / elapsed_total * 3600.0
-            } else {
-                0.0
-            };
+            std::thread::scope(|s| {
+                for _ in 0..args.parallel_games {
+                    s.spawn(|| {
+                        loop {
+                            let game_idx = game_counter.fetch_add(1, Ordering::Relaxed);
+                            if game_idx >= args.games {
+                                break;
+                            }
 
-            stats.record(record.result);
-            total_moves += record.num_moves as u64;
-            total_samples += samples.len() as u64;
+                            let game_start = Instant::now();
 
-            println!(
-                "[Game {}/{}] Moves: {} | Result: {} | Samples: {} | Time: {} | Games/hr: {:.0}",
-                game_idx + 1,
-                args.games,
-                record.num_moves,
-                result_str(record.result),
-                samples.len(),
-                format_duration(game_time),
-                games_per_hour,
+                            let record = play_game_parallel(
+                                &self_play_config,
+                                &server,
+                                args.threads as usize,
+                            );
+                            let samples = extract_samples(&record);
+
+                            buffer
+                                .add_game(&samples)
+                                .expect("Failed to write game to replay buffer");
+
+                            let game_time = game_start.elapsed().as_secs_f64();
+                            let num_moves = record.num_moves;
+                            let num_samples = samples.len();
+
+                            total_moves.fetch_add(num_moves as u64, Ordering::Relaxed);
+                            total_samples.fetch_add(num_samples as u64, Ordering::Relaxed);
+                            {
+                                let mut s = stats.lock().unwrap();
+                                s.record(record.result);
+                            }
+
+                            // Compute approximate progress.
+                            let completed = (game_idx + 1).min(args.games);
+                            let elapsed_total = session_start.elapsed().as_secs_f64();
+                            let games_per_hour = if elapsed_total > 0.0 {
+                                completed as f64 / elapsed_total * 3600.0
+                            } else {
+                                0.0
+                            };
+
+                            println!(
+                                "[Game {}/{}] Moves: {} | Result: {} | Samples: {} | Time: {} | Games/hr: {:.0}",
+                                completed,
+                                args.games,
+                                num_moves,
+                                result_str(record.result),
+                                num_samples,
+                                format_duration(game_time),
+                                games_per_hour,
+                            );
+                        }
+                    });
+                }
+            });
+        } else {
+            // -----------------------------------------------------------------
+            // Single game, multi-threaded MCTS
+            // -----------------------------------------------------------------
+            eprintln!(
+                "[INFO] Running in parallel MCTS mode ({} threads, batch_size={})",
+                args.threads, args.batch_size
             );
+
+            for game_idx in 0..args.games {
+                let game_start = Instant::now();
+
+                let record = play_game_parallel(
+                    &self_play_config,
+                    &server,
+                    args.threads as usize,
+                );
+                let samples = extract_samples(&record);
+
+                buffer
+                    .add_game(&samples)
+                    .expect("Failed to write game to replay buffer");
+
+                let game_time = game_start.elapsed().as_secs_f64();
+                let elapsed_total = session_start.elapsed().as_secs_f64();
+                let games_per_hour = if elapsed_total > 0.0 {
+                    (game_idx as f64 + 1.0) / elapsed_total * 3600.0
+                } else {
+                    0.0
+                };
+
+                stats.lock().unwrap().record(record.result);
+                total_moves.fetch_add(record.num_moves as u64, Ordering::Relaxed);
+                total_samples.fetch_add(samples.len() as u64, Ordering::Relaxed);
+
+                println!(
+                    "[Game {}/{}] Moves: {} | Result: {} | Samples: {} | Time: {} | Games/hr: {:.0}",
+                    game_idx + 1,
+                    args.games,
+                    record.num_moves,
+                    result_str(record.result),
+                    samples.len(),
+                    format_duration(game_time),
+                    games_per_hour,
+                );
+            }
         }
 
         server.shutdown();
@@ -285,12 +377,10 @@ fn main() {
             let record = play_game(&self_play_config, &evaluator);
             let samples = extract_samples(&record);
 
-            // Write to replay buffer.
             buffer
                 .add_game(&samples)
                 .expect("Failed to write game to replay buffer");
 
-            // Update statistics.
             let game_time = game_start.elapsed().as_secs_f64();
             let elapsed_total = session_start.elapsed().as_secs_f64();
             let games_per_hour = if elapsed_total > 0.0 {
@@ -299,9 +389,9 @@ fn main() {
                 0.0
             };
 
-            stats.record(record.result);
-            total_moves += record.num_moves as u64;
-            total_samples += samples.len() as u64;
+            stats.lock().unwrap().record(record.result);
+            total_moves.fetch_add(record.num_moves as u64, Ordering::Relaxed);
+            total_samples.fetch_add(samples.len() as u64, Ordering::Relaxed);
 
             println!(
                 "[Game {}/{}] Moves: {} | Result: {} | Samples: {} | Time: {} | Games/hr: {:.0}",
@@ -317,9 +407,12 @@ fn main() {
     }
 
     // Print summary.
+    let final_stats = stats.into_inner().unwrap();
     let total_time = session_start.elapsed().as_secs_f64();
+    let total_moves_val = total_moves.load(Ordering::Relaxed);
+    let total_samples_val = total_samples.load(Ordering::Relaxed);
     let avg_length = if args.games > 0 {
-        total_moves as f64 / args.games as f64
+        total_moves_val as f64 / args.games as f64
     } else {
         0.0
     };
@@ -330,10 +423,10 @@ fn main() {
         "Games: {} | Avg length: {:.1} | W/D/L: {}/{}/{} | Total samples: {} | Total time: {}",
         args.games,
         avg_length,
-        stats.white_wins,
-        stats.draws,
-        stats.black_wins,
-        total_samples,
+        final_stats.white_wins,
+        final_stats.draws,
+        final_stats.black_wins,
+        total_samples_val,
         format_duration(total_time),
     );
 }
@@ -366,6 +459,7 @@ mod tests {
         assert!(!args.no_noise);
         assert_eq!(args.c_puct, 2.5);
         assert_eq!(args.threads, 1);
+        assert_eq!(args.parallel_games, 1);
         assert_eq!(args.batch_size, 8);
     }
 
@@ -383,6 +477,7 @@ mod tests {
             "--no-noise",
             "--c-puct", "3.0",
             "--threads", "4",
+            "--parallel-games", "8",
             "--batch-size", "16",
         ]);
         assert!(args.is_ok(), "Should parse all args: {:?}", args.err());
@@ -398,6 +493,7 @@ mod tests {
         assert!(args.no_noise);
         assert_eq!(args.c_puct, 3.0);
         assert_eq!(args.threads, 4);
+        assert_eq!(args.parallel_games, 8);
         assert_eq!(args.batch_size, 16);
     }
 

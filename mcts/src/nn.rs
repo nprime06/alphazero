@@ -480,11 +480,17 @@ fn delta_to_queen_direction(dr: i8, df: i8) -> Option<usize> {
 
 /// Wrapper around a TorchScript model for position evaluation.
 ///
-/// Loads a `.pt` file exported by `neural.export.export_torchscript` and
-/// provides methods to evaluate single positions or batches.
+/// Loads a `.pt` file exported by `neural.export.export_torchscript` (FP32)
+/// or `neural.export.export_fp16` (FP16) and provides methods to evaluate
+/// single positions or batches.
+///
+/// The input dtype is auto-detected from the model's parameters on load,
+/// so both FP32 and FP16 models work transparently.
 pub struct NnModel {
     model: CModule,
     device: Device,
+    /// Dtype for input tensors, auto-detected from the model's weights.
+    input_kind: Kind,
 }
 
 /// Extract a flat Vec<f32> from a 1-D tensor.
@@ -507,12 +513,34 @@ fn tensor_to_scalar_f32(t: &Tensor) -> f32 {
 impl NnModel {
     /// Load a TorchScript model from a `.pt` file.
     ///
+    /// Auto-detects whether the model uses FP32 or FP16 weights and sets
+    /// the input dtype accordingly. This allows both `export_torchscript`
+    /// (FP32) and `export_fp16` (FP16) models to work transparently.
+    ///
     /// # Arguments
     /// * `path` - Path to the TorchScript model file.
     /// * `device` - Device to run inference on (CPU or CUDA).
     pub fn load(path: &str, device: Device) -> Result<Self, tch::TchError> {
         let model = CModule::load_on_device(path, device)?;
-        Ok(Self { model, device })
+
+        // Detect model dtype from the first parameter's kind.
+        let input_kind = model
+            .named_parameters()
+            .ok()
+            .and_then(|params| params.first().map(|(_, t)| t.kind()))
+            .unwrap_or(Kind::Float);
+
+        let kind_name = match input_kind {
+            Kind::Half => "FP16",
+            Kind::Float => "FP32",
+            other => {
+                eprintln!("[WARN] Unexpected model dtype {:?}, falling back to FP32", other);
+                return Ok(Self { model, device, input_kind: Kind::Float });
+            }
+        };
+        eprintln!("[INFO] Model loaded: {} ({})", path, kind_name);
+
+        Ok(Self { model, device, input_kind })
     }
 
     /// Evaluate a single board position.
@@ -523,7 +551,7 @@ impl NnModel {
         let input = encode_board(board);
         let input_tensor = Tensor::from_slice(&input)
             .reshape([1, TOTAL_PLANES as i64, BOARD_SIZE as i64, BOARD_SIZE as i64])
-            .to_kind(Kind::Float)
+            .to_kind(self.input_kind)
             .to_device(self.device);
 
         let output = self
@@ -585,7 +613,7 @@ impl NnModel {
                 BOARD_SIZE as i64,
                 BOARD_SIZE as i64,
             ])
-            .to_kind(Kind::Float)
+            .to_kind(self.input_kind)
             .to_device(self.device);
 
         let output = self

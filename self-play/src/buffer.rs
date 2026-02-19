@@ -162,6 +162,9 @@ impl ReplayBuffer {
     ///
     /// Files are sorted by name (which encodes timestamp), and the oldest
     /// are removed first until the count is within capacity.
+    ///
+    /// Tolerates concurrent deletes: if another thread already removed a
+    /// file, the `NotFound` error is silently ignored.
     fn evict(&self) -> io::Result<()> {
         let files = self.list_games()?;
         if files.len() <= self.capacity {
@@ -169,7 +172,11 @@ impl ReplayBuffer {
         }
         let to_remove = files.len() - self.capacity;
         for path in &files[..to_remove] {
-            std::fs::remove_file(path)?;
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
         }
         Ok(())
     }
