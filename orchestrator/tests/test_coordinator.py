@@ -53,6 +53,8 @@ class TestPipelineConfig:
         assert config.eval_games == 40
         assert config.eval_simulations == 400
         assert config.eval_win_threshold == 0.55
+        assert config.eval_backend == "auto"
+        assert config.eval_max_moves == 512
 
         # Pipeline defaults
         assert config.max_iterations == 0
@@ -75,6 +77,8 @@ class TestPipelineConfig:
             "selfplay_games_per_iteration": 100,
             "train_steps_per_iteration": 500,
             "eval_win_threshold": 0.60,
+            "eval_backend": "rust",
+            "eval_max_moves": 128,
             "max_iterations": 10,
             "slurm_partition": "test_partition",
         }
@@ -89,6 +93,8 @@ class TestPipelineConfig:
         assert config.selfplay_games_per_iteration == 100
         assert config.train_steps_per_iteration == 500
         assert config.eval_win_threshold == 0.60
+        assert config.eval_backend == "rust"
+        assert config.eval_max_moves == 128
         assert config.max_iterations == 10
         assert config.slurm_partition == "test_partition"
 

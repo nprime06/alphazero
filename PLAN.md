@@ -1457,9 +1457,9 @@ Phase 7 (Bindings & CLI):                          [can start after Phase 1]
 | 3.9b | Parallel search (atomics) | `cargo test parallel && cargo bench` | DONE (9 tests) |
 | 3.10 | Tree reuse + transpositions | `cargo test reuse && cargo test transposition` | DONE (helpers implemented; not wired into main search) |
 | 4.1 | Game loop | `cargo run -p self-play -- --games 1` | DONE (14 tests) |
-| 4.2 | Data collection | `cargo test data` | DONE (13 tests) |
-| 4.3 | Serialization | `cargo test serialize` | DONE (11 tests) |
-| 4.4 | Replay buffer | `cargo test buffer` | DONE (11 tests + 17 Python) |
+| 4.2 | Data collection | `cargo test data` | DONE (14 tests) |
+| 4.3 | Serialization | `cargo test serialize` | DONE (14 tests; v2 history + v1 compatibility) |
+| 4.4 | Replay buffer | `cargo test buffer` | DONE (11 Rust tests + 28 Python) |
 | 4.5 | Self-play worker | `cargo run -p self-play -- --games 10` | DONE (8 tests + 2 parallel) |
 | 5.1 | Data loading | `pytest tests/test_dataloader.py` | DONE (13 tests) |
 | 5.2 | Training loop + torch.compile | `python -m training.train --steps 100` | DONE (16 tests) |
@@ -1469,8 +1469,8 @@ Phase 7 (Bindings & CLI):                          [can start after Phase 1]
 | 5.6 | Slurm integration | `sbatch scripts/train.sbatch` | DONE (4 scripts) |
 | 5.7 | Monitoring (TensorBoard) | `tensorboard --logdir runs/` | DONE (17 tests) |
 | 6.1 | Weight distribution | `pytest tests/test_weights.py` | DONE (16 tests) |
-| 6.2 | Model evaluation | `python -m orchestrator.evaluate` | DONE (33 tests) |
-| 6.3 | Pipeline coordinator | `python -m orchestrator.coordinator` | DONE (25 tests) |
+| 6.2 | Model evaluation | `python -m orchestrator.evaluate` | DONE (37 tests; Python + Rust/PyO3 backends) |
+| 6.3 | Pipeline coordinator | `python -m orchestrator.coordinator` | DONE (27 tests) |
 | 7.1 | Chess engine bindings | `pytest tests/test_bindings.py` |
 | 7.2 | MCTS bindings | `pytest tests/test_mcts_bindings.py` |
-| 7.3 | CLI tool | `alphazero --help` |
+| 7.3 | CLI tool | `alphazero --help` | DONE (37 tests) |

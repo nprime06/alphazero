@@ -6,6 +6,7 @@
 //! we use an intermediate [`SerializedSample`] struct that stores:
 //!
 //! - The board as a FEN string
+//! - Up to seven previous board positions as FEN strings, most recent first
 //! - The policy as `(u16, f32)` pairs where the `u16` is a policy index (0..4671)
 //! - The value as an `f32`
 //!
@@ -45,7 +46,8 @@ use crate::data::TrainingSample;
 ///
 /// Bump this when making breaking changes to the file format so that readers
 /// can detect and reject incompatible files.
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
+const MIN_SUPPORTED_FORMAT_VERSION: u32 = 1;
 
 // =============================================================================
 // Serializable types
@@ -68,17 +70,72 @@ pub struct GameFileHeader {
 /// This is the on-disk format. Instead of storing the full `Board` (which has
 /// complex non-serde types), we store:
 /// - FEN string for the board position
+/// - History FEN strings for previous positions, most recent first
 /// - Policy as `Vec<(u16, f32)>` where `u16` is the policy index (0..4671)
 /// - Value as `f32`
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct SerializedSample {
     /// Board position as a FEN string.
     pub fen: String,
+    /// Previous board positions as FEN strings, most recent first.
+    ///
+    /// This field was added in format v2. It defaults to empty for v1 files.
+    #[serde(default)]
+    pub history_fens: Vec<String>,
     /// Policy targets: `(policy_index, probability)` pairs.
     /// Policy index is from `move_to_policy_index` (0..4671).
     pub policy: Vec<(u16, f32)>,
     /// Value target from the side-to-move's perspective.
     pub value: f32,
+}
+
+impl<'de> Deserialize<'de> for SerializedSample {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum SerializedSampleRepr {
+            Map {
+                fen: String,
+                #[serde(default)]
+                history_fens: Vec<String>,
+                policy: Vec<(u16, f32)>,
+                value: f32,
+            },
+            V2Tuple(String, Vec<String>, Vec<(u16, f32)>, f32),
+            V1Tuple(String, Vec<(u16, f32)>, f32),
+        }
+
+        match SerializedSampleRepr::deserialize(deserializer)? {
+            SerializedSampleRepr::Map {
+                fen,
+                history_fens,
+                policy,
+                value,
+            } => Ok(SerializedSample {
+                fen,
+                history_fens,
+                policy,
+                value,
+            }),
+            SerializedSampleRepr::V2Tuple(fen, history_fens, policy, value) => {
+                Ok(SerializedSample {
+                    fen,
+                    history_fens,
+                    policy,
+                    value,
+                })
+            }
+            SerializedSampleRepr::V1Tuple(fen, policy, value) => Ok(SerializedSample {
+                fen,
+                history_fens: Vec::new(),
+                policy,
+                value,
+            }),
+        }
+    }
 }
 
 /// A complete game file containing all training samples from one game.
@@ -101,6 +158,7 @@ pub struct GameFile {
 /// happen for legal moves from MCTS) are skipped with a warning.
 pub fn serialize_sample(sample: &TrainingSample) -> SerializedSample {
     let fen = sample.board.to_fen();
+    let history_fens: Vec<String> = sample.history.iter().take(7).map(Board::to_fen).collect();
     let policy: Vec<(u16, f32)> = sample
         .policy
         .iter()
@@ -123,6 +181,7 @@ pub fn serialize_sample(sample: &TrainingSample) -> SerializedSample {
 
     SerializedSample {
         fen,
+        history_fens,
         policy,
         value: sample.value,
     }
@@ -137,6 +196,11 @@ pub fn serialize_sample(sample: &TrainingSample) -> SerializedSample {
 /// - Any policy index cannot be mapped back to a move
 pub fn deserialize_sample(sample: &SerializedSample) -> TrainingSample {
     let board = Board::from_fen(&sample.fen).expect("invalid FEN in serialized sample");
+    let history = sample
+        .history_fens
+        .iter()
+        .map(|fen| Board::from_fen(fen).expect("invalid history FEN in serialized sample"))
+        .collect();
     let policy: Vec<(Move, f32)> = sample
         .policy
         .iter()
@@ -149,6 +213,7 @@ pub fn deserialize_sample(sample: &SerializedSample) -> TrainingSample {
 
     TrainingSample {
         board,
+        history,
         policy,
         value: sample.value,
     }
@@ -191,12 +256,12 @@ pub fn read_game_file(path: &Path) -> io::Result<Vec<TrainingSample>> {
     let bytes = std::fs::read(path)?;
     let game_file: GameFile =
         rmp_serde::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    if game_file.header.version != FORMAT_VERSION {
+    if !is_supported_format_version(game_file.header.version) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "unsupported format version: {} (expected {})",
-                game_file.header.version, FORMAT_VERSION
+                "unsupported format version: {} (supported {}..={})",
+                game_file.header.version, MIN_SUPPORTED_FORMAT_VERSION, FORMAT_VERSION
             ),
         ));
     }
@@ -211,16 +276,20 @@ pub fn read_game_file_raw(path: &Path) -> io::Result<GameFile> {
     let bytes = std::fs::read(path)?;
     let game_file: GameFile =
         rmp_serde::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    if game_file.header.version != FORMAT_VERSION {
+    if !is_supported_format_version(game_file.header.version) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "unsupported format version: {} (expected {})",
-                game_file.header.version, FORMAT_VERSION
+                "unsupported format version: {} (supported {}..={})",
+                game_file.header.version, MIN_SUPPORTED_FORMAT_VERSION, FORMAT_VERSION
             ),
         ));
     }
     Ok(game_file)
+}
+
+fn is_supported_format_version(version: u32) -> bool {
+    (MIN_SUPPORTED_FORMAT_VERSION..=FORMAT_VERSION).contains(&version)
 }
 
 // =============================================================================
@@ -245,6 +314,7 @@ mod tests {
         ];
         TrainingSample {
             board,
+            history: Vec::new(),
             policy,
             value,
         }
@@ -264,6 +334,37 @@ mod tests {
             original.board.to_fen(),
             deserialized.board.to_fen(),
             "FEN should match after roundtrip"
+        );
+    }
+
+    #[test]
+    fn roundtrip_preserves_history_fens() {
+        let mut original = make_starting_sample(1.0);
+        original.history = vec![
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+                .expect("valid FEN"),
+            Board::starting_position(),
+        ];
+
+        let serialized = serialize_sample(&original);
+        assert_eq!(
+            serialized.history_fens,
+            original
+                .history
+                .iter()
+                .map(Board::to_fen)
+                .collect::<Vec<_>>()
+        );
+
+        let deserialized = deserialize_sample(&serialized);
+        assert_eq!(deserialized.history.len(), 2);
+        assert_eq!(
+            deserialized.history[0].to_fen(),
+            original.history[0].to_fen()
+        );
+        assert_eq!(
+            deserialized.history[1].to_fen(),
+            original.history[1].to_fen()
         );
     }
 
@@ -357,11 +458,7 @@ mod tests {
                 "Sample {}: FEN mismatch",
                 i
             );
-            assert_eq!(
-                orig.value, loaded.value,
-                "Sample {}: value mismatch",
-                i
-            );
+            assert_eq!(orig.value, loaded.value, "Sample {}: value mismatch", i);
             assert_eq!(
                 orig.policy.len(),
                 loaded.policy.len(),
@@ -404,6 +501,7 @@ mod tests {
         for &v in &values {
             let sample = TrainingSample {
                 board: Board::starting_position(),
+                history: Vec::new(),
                 policy: vec![(Move::new(Square::E2, Square::E4), 1.0)],
                 value: v,
             };
@@ -445,6 +543,53 @@ mod tests {
         );
 
         // Clean up
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn reads_v1_files_without_history_fens() {
+        #[derive(serde::Serialize)]
+        struct OldGameFile {
+            header: GameFileHeader,
+            samples: Vec<OldSerializedSample>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct OldSerializedSample {
+            fen: String,
+            policy: Vec<(u16, f32)>,
+            value: f32,
+        }
+
+        let original = make_starting_sample(0.5);
+        let serialized = serialize_sample(&original);
+        let old_file = OldGameFile {
+            header: GameFileHeader {
+                version: 1,
+                num_samples: 1,
+            },
+            samples: vec![OldSerializedSample {
+                fen: serialized.fen,
+                policy: serialized.policy,
+                value: serialized.value,
+            }],
+        };
+        let bytes = rmp_serde::to_vec(&old_file).unwrap();
+
+        let dir = std::env::temp_dir().join("alphazero_test_v1_compat");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v1.msgpack");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let loaded = read_game_file(&path).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].history.is_empty());
+
+        let raw = read_game_file_raw(&path).unwrap();
+        assert_eq!(raw.header.version, 1);
+        assert!(raw.samples[0].history_fens.is_empty());
+
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();
     }
@@ -496,11 +641,7 @@ mod tests {
                 "Sample {}: FEN mismatch",
                 i
             );
-            assert_eq!(
-                orig.value, loaded.value,
-                "Sample {}: value mismatch",
-                i
-            );
+            assert_eq!(orig.value, loaded.value, "Sample {}: value mismatch", i);
             assert_eq!(
                 orig.policy.len(),
                 loaded.policy.len(),
@@ -563,10 +704,7 @@ mod tests {
 
     #[test]
     fn header_sample_count_matches() {
-        let samples = vec![
-            make_starting_sample(1.0),
-            make_starting_sample(-1.0),
-        ];
+        let samples = vec![make_starting_sample(1.0), make_starting_sample(-1.0)];
 
         let dir = std::env::temp_dir().join("alphazero_test_header");
         std::fs::create_dir_all(&dir).unwrap();
@@ -584,10 +722,7 @@ mod tests {
             game_file.header.version, FORMAT_VERSION,
             "Header should have correct version"
         );
-        assert_eq!(
-            game_file.samples.len(), 2,
-            "Should have 2 samples in file"
-        );
+        assert_eq!(game_file.samples.len(), 2, "Should have 2 samples in file");
 
         // Clean up
         std::fs::remove_file(&path).ok();
@@ -601,13 +736,12 @@ mod tests {
     #[test]
     fn non_starting_position_roundtrip() {
         // Create a board from a FEN after 1. e4
-        let board = Board::from_fen(
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-        )
-        .expect("Valid FEN");
+        let board = Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+            .expect("Valid FEN");
 
         let sample = TrainingSample {
             board,
+            history: Vec::new(),
             policy: vec![
                 (Move::new(Square::E7, Square::E5), 0.7),
                 (Move::new(Square::D7, Square::D5), 0.3),
@@ -633,16 +767,8 @@ mod tests {
             .zip(deserialized.policy.iter())
             .enumerate()
         {
-            assert_eq!(
-                orig_mv.from, deser_mv.from,
-                "Move {}: from mismatch",
-                i
-            );
-            assert_eq!(
-                orig_mv.to, deser_mv.to,
-                "Move {}: to mismatch",
-                i
-            );
+            assert_eq!(orig_mv.from, deser_mv.from, "Move {}: from mismatch", i);
+            assert_eq!(orig_mv.to, deser_mv.to, "Move {}: to mismatch", i);
         }
     }
 }

@@ -187,6 +187,19 @@ class TestEvaluateArgs:
         assert args.num_games == 100
         assert args.simulations == 100
         assert args.device == "cpu"
+        assert args.backend == "auto"
+        assert args.max_moves == 512
+
+    def test_custom_backend(self, parser):
+        args = parser.parse_args([
+            "evaluate",
+            "--model-a", "a.pt",
+            "--model-b", "b.pt",
+            "--backend", "rust",
+            "--max-moves", "64",
+        ])
+        assert args.backend == "rust"
+        assert args.max_moves == 64
 
     def test_missing_models_exits(self, parser):
         with pytest.raises(SystemExit):
@@ -261,6 +274,8 @@ class TestPipelineArgs:
         assert args.iterations is None
         assert args.network is None
         assert args.gpus is None
+        assert args.eval_backend is None
+        assert args.eval_max_moves is None
         assert args.dry_run is False
 
     def test_overrides(self, parser):
@@ -272,6 +287,8 @@ class TestPipelineArgs:
             "--iterations", "3",
             "--network", "tiny",
             "--gpus", "2",
+            "--eval-backend", "rust",
+            "--eval-max-moves", "80",
             "--dry-run",
         ])
         assert args.run_dir == "/tmp/run"
@@ -279,6 +296,8 @@ class TestPipelineArgs:
         assert args.iterations == 3
         assert args.network == "tiny"
         assert args.gpus == 2
+        assert args.eval_backend == "rust"
+        assert args.eval_max_moves == 80
         assert args.dry_run is True
 
     def test_config_is_optional(self, parser):

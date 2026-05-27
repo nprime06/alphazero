@@ -16,7 +16,7 @@ A from-scratch implementation of [DeepMind's AlphaZero](https://arxiv.org/abs/17
 ┌───────────────┐    ┌───────────────────┐    ┌───────────────────┐
 │  Self-Play    │    │  Training Loop    │    │   Evaluation      │
 │  Workers      │    │  (Single-process) │    │    Workers        │
-│  (Rust)       │    │  (PyTorch)        │    │  (Python MCTS)    │
+│  (Rust)       │    │  (PyTorch)        │    │  (Python/Rust MCTS)│
 └───────────────┘    └───────────────────┘    └───────────────────┘
         │                       │                       │
         ▼                       ▼                       ▼
@@ -122,10 +122,10 @@ neural/
 - 112 history planes: 8 time steps × 14 planes (6 own pieces + 6 opponent pieces + 2 repetition counts)
 - 7 auxiliary planes: side to move, move count, 4 castling rights, halfmove clock
 
-Current self-play replay files store FEN, policy, and value only. Training
-samples reconstructed from replay therefore populate the current-position
-planes; full history/repetition replay is supported by the encoder API but is
-not wired into the pipeline yet.
+Current self-play replay files store the current FEN plus up to seven previous
+FENs, most recent first. Training reconstructs history and repetition planes
+from those FENs. Legacy v1 replay files without history remain readable and
+encode with empty history planes.
 
 **Policy output**: 4672 logits = 8×8 source squares × 73 move types (56 queen-type + 8 knight + 9 underpromotions)
 
@@ -178,14 +178,14 @@ self-play/
     ├── game.rs                # Game loop: MCTS search → select move → record position → repeat
     ├── data.rs                # GameRecord → TrainingSample conversion (assigns game outcomes)
     ├── buffer.rs              # Disk-based replay buffer with capacity limits and oldest-first eviction
-    └── serialize.rs           # MessagePack serialization: FEN + sparse policy + value per sample
+    └── serialize.rs           # MessagePack serialization: FEN history + sparse policy + value per sample
 ```
 
 **Data format**: Each game file is a MessagePack blob containing:
 - Header: format version, sample count
-- Samples: FEN string, sparse policy `[(index, probability), ...]`, value `{-1, 0, +1}`
+- Samples: FEN string, optional `history_fens`, sparse policy `[(index, probability), ...]`, value `{-1, 0, +1}`
 
-**62 tests.**
+**65 tests.**
 
 ---
 
@@ -227,13 +227,16 @@ training/
 - Learning rate: 0.2 → 0.02 → 0.002 (step decay at 100K, 300K, 500K)
 - Mixed precision (AMP) on CUDA
 
-**98 tests.**
+**105 tests.**
 
 ---
 
 ## `orchestrator/` — Pipeline Coordination
 
 Manages the full training pipeline: weight distribution, model evaluation, and the self-play → train → evaluate loop.
+Evaluation supports `backend="auto"`, `backend="python"`, and
+`backend="rust"`. The Rust backend calls `alphazero_py.search_with_model`
+when the PyO3 extension is installed and evaluation simulations are positive.
 
 ```
 orchestrator/
@@ -241,7 +244,7 @@ orchestrator/
 ├── orchestrator/
 │   ├── __init__.py
 │   ├── weights.py             # WeightPublisher: version + export TorchScript; WeightWatcher: detect updates
-│   ├── evaluate.py            # Model evaluation: play matches, compute ELO differences
+│   ├── evaluate.py            # Model evaluation: Python or Rust/PyO3 MCTS backends
 │   ├── coordinator.py         # PipelineCoordinator: YAML config, persistent state, iteration loop
 │   └── config.yaml            # Example pipeline configuration
 └── tests/
@@ -250,7 +253,7 @@ orchestrator/
     └── test_coordinator.py    # Config loading, state persistence, dry run, iteration control
 ```
 
-**74 tests.**
+**80 tests.**
 
 ---
 
@@ -395,6 +398,9 @@ from orchestrator.evaluate import evaluate_models
 result = evaluate_models('model_a.pt', 'model_b.pt', num_games=100)
 print(result.summary())
 "
+
+# Rust-backed MCTS evaluation when alphazero_py is installed
+alphazero evaluate --model-a model_a.pt --model-b model_b.pt --simulations 100 --backend rust
 ```
 
 ### Run on Slurm Cluster
@@ -407,7 +413,7 @@ bash training/scripts/submit_train.sh --gpus 1 --dummy-data --network tiny --ste
 bash training/scripts/submit_selfplay.sh --gpus 1
 
 # Run the full pipeline
-alphazero pipeline --config orchestrator/orchestrator/config.yaml --iterations 5
+alphazero pipeline --config orchestrator/orchestrator/config.yaml --iterations 5 --eval-backend auto
 ```
 
 Local `alphazero self-play`, `alphazero play`, and coordinator self-play runs
@@ -456,11 +462,11 @@ On Linux, use `LD_LIBRARY_PATH` instead of or in addition to
 | chess-engine | 484 passed, 8 ignored | Perft-validated against Stockfish |
 | neural | 358 passed, 1 skipped | Cross-validated Rust ↔ Python encoding |
 | mcts | 168 passed | Requires libtorch at runtime |
-| self-play | 62 passed | Requires libtorch at runtime |
-| training | 98 passed | CPU-only tests with tiny network |
-| orchestrator | 76 passed | Pure Python MCTS for evaluation |
-| alphazero (CLI) | 36 passed | Argument parsing, wrappers, and help text |
-| **Total** | **~1,282** | |
+| self-play | 65 passed | Requires libtorch at runtime |
+| training | 105 passed | CPU-only tests with tiny network |
+| orchestrator | 80 passed | Python and Rust/PyO3 evaluation paths |
+| alphazero (CLI) | 37 passed | Argument parsing, wrappers, and help text |
+| **Total** | **~1,297** | |
 
 ## Hardware Target
 

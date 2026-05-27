@@ -1,8 +1,8 @@
 """Model evaluation for AlphaZero training.
 
 Plays games between two neural network models to measure strength progression.
-Uses a simple pure-Python MCTS implementation. Rust/PyO3 search bindings exist
-for direct analysis, but this evaluation path is not wired to them yet.
+Supports both the original pure-Python evaluator and a Rust/PyO3-backed MCTS
+backend through ``alphazero_py`` when that extension is installed.
 
 The evaluation flow:
 1. Load two TorchScript models (current vs previous)
@@ -30,6 +30,7 @@ Usage::
 
 from __future__ import annotations
 
+import importlib
 import math
 import random
 from dataclasses import dataclass, field
@@ -145,6 +146,49 @@ def _require_python_chess() -> None:
             "The 'python-chess' package is required for model evaluation. "
             "Install it with: pip install python-chess"
         )
+
+
+def _load_alphazero_py():
+    """Import the Rust/PyO3 bindings, raising a helpful ImportError if absent."""
+    try:
+        return importlib.import_module("alphazero_py")
+    except ImportError as exc:
+        raise ImportError(
+            "The 'alphazero_py' extension is required for Rust-backed "
+            "evaluation. Build it with: "
+            "maturin develop --manifest-path alphazero-py/Cargo.toml"
+        ) from exc
+
+
+def _has_alphazero_py() -> bool:
+    """Return True if the Rust/PyO3 bindings can be imported."""
+    try:
+        _load_alphazero_py()
+    except ImportError:
+        return False
+    return True
+
+
+def _resolve_backend(backend: str, simulations: int) -> str:
+    """Resolve ``auto`` evaluation backend selection."""
+    if backend not in {"auto", "python", "rust"}:
+        raise ValueError(
+            f"Unknown evaluation backend '{backend}'. "
+            "Expected 'auto', 'python', or 'rust'."
+        )
+
+    if backend == "rust":
+        if simulations <= 0:
+            raise ValueError("Rust evaluation backend requires simulations > 0.")
+        _load_alphazero_py()
+        return "rust"
+
+    if backend == "auto":
+        if simulations > 0 and _has_alphazero_py():
+            return "rust"
+        return "python"
+
+    return "python"
 
 
 # Promotion piece mapping: python-chess piece type -> our string name
@@ -409,6 +453,59 @@ def mcts_search(
 
 
 # =============================================================================
+# Rust-backed MCTS
+# =============================================================================
+
+
+def rust_mcts_search(
+    board: "chess.Board",
+    model_path: str,
+    simulations: int = 100,
+    c_puct: float = 2.5,
+    device: str = "cpu",
+) -> dict[str, float]:
+    """Run MCTS through the Rust/PyO3 bindings and return visit fractions.
+
+    Args:
+        board: Current python-chess board. Game state remains owned by Python;
+            the Rust binding receives the current FEN for each search.
+        model_path: TorchScript model path.
+        simulations: Number of MCTS simulations. Must be positive.
+        c_puct: Exploration constant.
+        device: Device string accepted by ``alphazero_py.search_with_model``.
+
+    Returns:
+        Dict mapping legal move UCI strings to visit fractions.
+    """
+    _require_python_chess()
+    if simulations <= 0:
+        raise ValueError("Rust MCTS search requires simulations > 0.")
+
+    alphazero_py = _load_alphazero_py()
+    rust_board = alphazero_py.Board.from_fen(board.fen())
+    search_result = alphazero_py.search_with_model(
+        rust_board,
+        model_path,
+        simulations,
+        1.0,
+        c_puct,
+        device,
+    )
+
+    legal_ucis = {move.uci() for move in board.legal_moves}
+    move_visits = [
+        (uci, int(visits))
+        for uci, visits in getattr(search_result, "moves", [])
+        if uci in legal_ucis and int(visits) > 0
+    ]
+    total_visits = sum(visits for _, visits in move_visits)
+    if total_visits == 0:
+        return {}
+
+    return {uci: visits / total_visits for uci, visits in move_visits}
+
+
+# =============================================================================
 # Game Playing
 # =============================================================================
 
@@ -530,6 +627,52 @@ def play_game(
         return "draw", num_moves
 
 
+def play_game_rust(
+    model_white_path: str,
+    model_black_path: str,
+    max_moves: int = 512,
+    simulations: int = 100,
+    temperature: float = 0.1,
+    device: str = "cpu",
+) -> tuple[str, int]:
+    """Play one game using Rust/PyO3 MCTS for move search.
+
+    Python still owns the outer game loop so match bookkeeping, color
+    alternation, and result handling remain identical to the Python backend.
+    """
+    _require_python_chess()
+    if simulations <= 0:
+        raise ValueError("Rust evaluation backend requires simulations > 0.")
+
+    board = chess.Board()
+    num_moves = 0
+
+    while not board.is_game_over() and num_moves < max_moves:
+        model_path = model_white_path if board.turn == chess.WHITE else model_black_path
+        visit_dist = rust_mcts_search(
+            board,
+            model_path,
+            simulations=simulations,
+            device=device,
+        )
+        if not visit_dist:
+            break
+
+        move_uci = _select_move(visit_dist, temperature)
+        board.push(chess.Move.from_uci(move_uci))
+        num_moves += 1
+
+    if board.is_game_over():
+        result_str = board.result()
+        if result_str == "1-0":
+            return "white", num_moves
+        elif result_str == "0-1":
+            return "black", num_moves
+        else:
+            return "draw", num_moves
+    return "draw", num_moves
+
+
 # =============================================================================
 # Match Evaluation
 # =============================================================================
@@ -542,6 +685,8 @@ def evaluate_models(
     simulations: int = 0,
     temperature: float = 0.1,
     device: str = "cpu",
+    backend: str = "auto",
+    max_moves: int = 512,
     verbose: bool = True,
 ) -> EvalResult:
     """Play a match between two models and return evaluation results.
@@ -559,6 +704,8 @@ def evaluate_models(
         simulations: MCTS simulations per move (0 = policy-only).
         temperature: Temperature for move selection.
         device: Device for inference ("cpu" or "cuda").
+        backend: Evaluation backend: "auto", "python", or "rust".
+        max_moves: Maximum half-moves per game before declaring a draw.
         verbose: If True, print progress after each game.
 
     Returns:
@@ -566,8 +713,13 @@ def evaluate_models(
     """
     _require_python_chess()
 
-    model_a = torch.jit.load(model_a_path, map_location=device)
-    model_b = torch.jit.load(model_b_path, map_location=device)
+    resolved_backend = _resolve_backend(backend, simulations)
+    if resolved_backend == "python":
+        model_a = torch.jit.load(model_a_path, map_location=device)
+        model_b = torch.jit.load(model_b_path, map_location=device)
+    else:
+        model_a = None
+        model_b = None
 
     result = EvalResult()
 
@@ -576,19 +728,36 @@ def evaluate_models(
         if game_idx % 2 == 0:
             model_white = model_a
             model_black = model_b
+            model_white_path = model_a_path
+            model_black_path = model_b_path
             a_is_white = True
         else:
             model_white = model_b
             model_black = model_a
+            model_white_path = model_b_path
+            model_black_path = model_a_path
             a_is_white = False
 
-        outcome, length = play_game(
-            model_white=model_white,
-            model_black=model_black,
-            simulations=simulations,
-            temperature=temperature,
-            device=device,
-        )
+        if resolved_backend == "rust":
+            outcome, length = play_game_rust(
+                model_white_path=model_white_path,
+                model_black_path=model_black_path,
+                max_moves=max_moves,
+                simulations=simulations,
+                temperature=temperature,
+                device=device,
+            )
+        else:
+            assert model_white is not None
+            assert model_black is not None
+            outcome, length = play_game(
+                model_white=model_white,
+                model_black=model_black,
+                max_moves=max_moves,
+                simulations=simulations,
+                temperature=temperature,
+                device=device,
+            )
 
         result.total_games += 1
         result.game_lengths.append(length)
@@ -608,6 +777,7 @@ def evaluate_models(
             print(
                 f"Game {game_idx + 1}/{num_games}: "
                 f"A ({a_color}) vs B -- {outcome} in {length} moves "
+                f"[{resolved_backend}] "
                 f"[A: {result.a_wins}W/{result.draws}D/{result.b_wins}L]"
             )
 

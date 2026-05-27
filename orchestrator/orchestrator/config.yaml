@@ -48,6 +48,11 @@ train_gpus: 1
 eval_games: 40
 # MCTS simulations per move during evaluation.
 eval_simulations: 400
+# Evaluation backend: auto uses Rust/PyO3 MCTS when alphazero_py is installed
+# and eval_simulations > 0, otherwise falls back to Python.
+eval_backend: auto
+# Max half-moves per evaluation game before declaring a draw.
+eval_max_moves: 512
 # Win rate threshold for the new model to replace the current best.
 # 0.55 means the new model must win at least 55% of evaluation games.
 eval_win_threshold: 0.55

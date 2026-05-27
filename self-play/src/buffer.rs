@@ -213,6 +213,7 @@ mod tests {
     fn make_sample(value: f32) -> TrainingSample {
         TrainingSample {
             board: Board::starting_position(),
+            history: Vec::new(),
             policy: vec![
                 (Move::new(Square::E2, Square::E4), 0.6),
                 (Move::new(Square::D2, Square::D4), 0.4),

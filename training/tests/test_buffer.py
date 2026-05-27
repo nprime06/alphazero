@@ -14,7 +14,13 @@ import msgpack
 import numpy as np
 import pytest
 
-from training.buffer import ReplayBuffer, _read_game_file, POLICY_SIZE
+from training.buffer import (
+    MAX_HISTORY_FENS,
+    POLICY_SIZE,
+    ReplayBuffer,
+    _read_game_file,
+    board_state_from_sample,
+)
 
 
 # =============================================================================
@@ -28,13 +34,21 @@ STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 AFTER_E4_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
 
 
-def _make_sample(fen: str, policy_indices: list, value: float) -> dict:
+def _make_sample(
+    fen: str,
+    policy_indices: list,
+    value: float,
+    history_fens: list[str] | None = None,
+) -> dict:
     """Create a raw sample dict matching the Rust serialization format."""
-    return {
+    sample = {
         "fen": fen,
         "policy": [(idx, prob) for idx, prob in policy_indices],
         "value": value,
     }
+    if history_fens is not None:
+        sample["history_fens"] = history_fens
+    return sample
 
 
 def _write_msgpack_game_file(path: Path, samples: list, version: int = 1) -> None:
@@ -50,6 +64,32 @@ def _write_msgpack_game_file(path: Path, samples: list, version: int = 1) -> Non
         },
         "samples": samples,
     }
+    with open(path, "wb") as f:
+        f.write(msgpack.packb(game_file, use_bin_type=True))
+
+
+def _write_tuple_msgpack_game_file(
+    path: Path,
+    samples: list,
+    version: int = 1,
+) -> None:
+    """Write the tuple-style representation used by rmp-serde::to_vec."""
+    tuple_samples = []
+    for sample in samples:
+        if "history_fens" in sample:
+            tuple_samples.append([
+                sample["fen"],
+                sample["history_fens"],
+                sample["policy"],
+                sample["value"],
+            ])
+        else:
+            tuple_samples.append([
+                sample["fen"],
+                sample["policy"],
+                sample["value"],
+            ])
+    game_file = [[version, len(samples)], tuple_samples]
     with open(path, "wb") as f:
         f.write(msgpack.packb(game_file, use_bin_type=True))
 
@@ -132,6 +172,84 @@ class TestCrossLanguageCompat:
         assert len(loaded[1]["policy"]) == 2
         assert loaded[1]["value"] == -1.0
 
+    def test_read_v2_msgpack_with_history_fens(self, tmp_path):
+        """Version 2 replay files preserve bounded FEN history."""
+        history = [STARTING_FEN, AFTER_E4_FEN]
+        samples = [
+            _make_sample(
+                AFTER_E4_FEN,
+                [(877, 1.0)],
+                0.5,
+                history_fens=history,
+            )
+        ]
+        path = tmp_path / "v2_game.msgpack"
+        _write_msgpack_game_file(path, samples, version=2)
+
+        loaded = _read_game_file(path)
+
+        assert loaded[0]["history_fens"] == history
+
+    def test_v1_msgpack_defaults_to_empty_history(self, tmp_path):
+        """Version 1 replay files remain readable without history_fens."""
+        samples = [_make_sample(STARTING_FEN, [(0, 1.0)], 0.0)]
+        path = tmp_path / "v1_game.msgpack"
+        _write_msgpack_game_file(path, samples, version=1)
+
+        loaded = _read_game_file(path)
+
+        assert loaded[0]["history_fens"] == []
+
+    def test_read_tuple_encoded_v1_msgpack(self, tmp_path):
+        """Python reader accepts legacy Rust tuple-encoded v1 files."""
+        samples = [_make_sample(STARTING_FEN, [(0, 1.0)], 0.0)]
+        path = tmp_path / "tuple_v1.msgpack"
+        _write_tuple_msgpack_game_file(path, samples, version=1)
+
+        loaded = _read_game_file(path)
+
+        assert loaded[0]["fen"] == STARTING_FEN
+        assert loaded[0]["history_fens"] == []
+        assert loaded[0]["policy"] == [(0, 1.0)]
+
+    def test_read_tuple_encoded_v2_msgpack_with_history(self, tmp_path):
+        """Python reader accepts tuple-encoded v2 files with history."""
+        history = [STARTING_FEN]
+        samples = [
+            _make_sample(
+                AFTER_E4_FEN,
+                [(877, 1.0)],
+                0.25,
+                history_fens=history,
+            )
+        ]
+        path = tmp_path / "tuple_v2.msgpack"
+        _write_tuple_msgpack_game_file(path, samples, version=2)
+
+        loaded = _read_game_file(path)
+
+        assert loaded[0]["fen"] == AFTER_E4_FEN
+        assert loaded[0]["history_fens"] == history
+        assert loaded[0]["value"] == 0.25
+
+    def test_history_fens_are_capped(self, tmp_path):
+        """Only the encoder-supported seven history positions are retained."""
+        history = [STARTING_FEN] * (MAX_HISTORY_FENS + 3)
+        samples = [
+            _make_sample(
+                AFTER_E4_FEN,
+                [(877, 1.0)],
+                0.0,
+                history_fens=history,
+            )
+        ]
+        path = tmp_path / "long_history.msgpack"
+        _write_msgpack_game_file(path, samples, version=2)
+
+        loaded = _read_game_file(path)
+
+        assert len(loaded[0]["history_fens"]) == MAX_HISTORY_FENS
+
     def test_read_msgpack_preserves_fen(self, tmp_path):
         """FEN strings are preserved exactly through serialization."""
         fens = [
@@ -177,6 +295,36 @@ class TestCrossLanguageCompat:
             assert isinstance(prob, float), f"Prob should be float, got {type(prob)}"
 
         assert isinstance(loaded[0]["value"], float)
+
+    def test_board_state_from_sample_populates_history(self):
+        """Replay history should reach the neural BoardState."""
+        sample = _make_sample(
+            AFTER_E4_FEN,
+            [(877, 1.0)],
+            0.0,
+            history_fens=[STARTING_FEN],
+        )
+
+        state = board_state_from_sample(sample)
+
+        assert len(state.history) == 1
+        assert state.history[0].fullmove_number == 1
+
+    def test_board_state_from_sample_reconstructs_repetition_counts(self):
+        """Repetition planes use prior occurrences from stored history."""
+        repeated_fen = STARTING_FEN
+        sample = _make_sample(
+            repeated_fen,
+            [(877, 1.0)],
+            0.0,
+            history_fens=[AFTER_E4_FEN, repeated_fen, repeated_fen],
+        )
+
+        state = board_state_from_sample(sample)
+
+        assert state.repetition_count == 2
+        assert state.history[1].repetition_count == 1
+        assert state.history[2].repetition_count == 0
 
 
 # =============================================================================

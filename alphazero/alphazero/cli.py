@@ -333,6 +333,15 @@ def _add_evaluate_parser(subparsers: argparse._SubParsersAction) -> None:
         "--device", type=str, default="cpu",
         help="Device for inference (default: cpu)",
     )
+    p.add_argument(
+        "--backend", type=str, default="auto",
+        choices=["auto", "python", "rust"],
+        help="Evaluation backend (default: auto)",
+    )
+    p.add_argument(
+        "--max-moves", type=int, default=512,
+        help="Max half-moves per evaluation game (default: 512)",
+    )
     p.set_defaults(func=_cmd_evaluate)
 
 
@@ -354,6 +363,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> None:
         num_games=args.num_games,
         simulations=args.simulations,
         device=args.device,
+        backend=args.backend,
+        max_moves=args.max_moves,
     )
     print(results.summary())
 
@@ -554,6 +565,15 @@ def _add_pipeline_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Number of GPUs for training (default: from config or 1)",
     )
     p.add_argument(
+        "--eval-backend", type=str, default=None,
+        choices=["auto", "python", "rust"],
+        help="Evaluation backend (default: from config or auto)",
+    )
+    p.add_argument(
+        "--eval-max-moves", type=int, default=None,
+        help="Max half-moves per evaluation game (default: from config or 512)",
+    )
+    p.add_argument(
         "--dry-run", action="store_true",
         help="Log what would be done without executing",
     )
@@ -584,6 +604,10 @@ def _cmd_pipeline(args: argparse.Namespace) -> None:
         config.train_network = args.network
     if args.gpus is not None:
         config.train_gpus = args.gpus
+    if args.eval_backend is not None:
+        config.eval_backend = args.eval_backend
+    if args.eval_max_moves is not None:
+        config.eval_max_moves = args.eval_max_moves
     if args.dry_run:
         config.dry_run = True
         print("Dry-run mode enabled.")

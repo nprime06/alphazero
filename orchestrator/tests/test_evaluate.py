@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -352,6 +354,145 @@ class TestMCTSSearch:
         legal_ucis = {m.uci() for m in board.legal_moves}
         for uci in dist:
             assert uci in legal_ucis
+
+
+# =============================================================================
+# TestRustBackedSearch
+# =============================================================================
+
+
+@requires_python_chess
+class TestRustBackedSearch:
+    """Tests for the Rust/PyO3-backed evaluation path using a fake binding."""
+
+    def _install_fake_alphazero_py(self, monkeypatch, calls: list) -> None:
+        class FakeBoard:
+            def __init__(self, fen: str) -> None:
+                self.fen = fen
+
+            @staticmethod
+            def from_fen(fen: str):
+                calls.append(("from_fen", fen))
+                return FakeBoard(fen)
+
+        def fake_search_with_model(
+            board, model_path, simulations, temperature, c_puct, device
+        ):
+            calls.append((
+                "search_with_model",
+                model_path,
+                simulations,
+                temperature,
+                c_puct,
+                device,
+            ))
+            py_board = chess.Board(board.fen)
+            first_move = next(iter(py_board.legal_moves)).uci()
+            return SimpleNamespace(
+                moves=[(first_move, simulations), ("a1a1", 99)],
+                total_simulations=simulations,
+                root_value=0.0,
+                best_move=first_move,
+            )
+
+        monkeypatch.setitem(
+            sys.modules,
+            "alphazero_py",
+            SimpleNamespace(
+                Board=FakeBoard,
+                search_with_model=fake_search_with_model,
+            ),
+        )
+
+    def test_rust_mcts_search_uses_binding(self, monkeypatch) -> None:
+        from orchestrator.evaluate import rust_mcts_search
+
+        calls = []
+        self._install_fake_alphazero_py(monkeypatch, calls)
+
+        dist = rust_mcts_search(
+            chess.Board(),
+            "model.pt",
+            simulations=5,
+            c_puct=1.25,
+            device="cpu",
+        )
+
+        assert sum(dist.values()) == pytest.approx(1.0)
+        assert calls[0][0] == "from_fen"
+        assert calls[1] == (
+            "search_with_model",
+            "model.pt",
+            5,
+            1.0,
+            1.25,
+            "cpu",
+        )
+        assert "a1a1" not in dist
+
+    def test_play_game_rust_respects_max_moves(self, monkeypatch) -> None:
+        from orchestrator.evaluate import play_game_rust
+
+        calls = []
+        self._install_fake_alphazero_py(monkeypatch, calls)
+
+        result, length = play_game_rust(
+            "white.pt",
+            "black.pt",
+            max_moves=2,
+            simulations=3,
+            device="cpu",
+        )
+
+        assert result == "draw"
+        assert length == 2
+        searched_models = [
+            call[1] for call in calls if call[0] == "search_with_model"
+        ]
+        assert searched_models == ["white.pt", "black.pt"]
+
+    def test_evaluate_models_rust_backend_does_not_load_torch_model(
+        self, monkeypatch
+    ) -> None:
+        from orchestrator.evaluate import evaluate_models
+
+        calls = []
+        self._install_fake_alphazero_py(monkeypatch, calls)
+        monkeypatch.setattr(
+            torch.jit,
+            "load",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("rust backend should not call torch.jit.load")
+            ),
+        )
+
+        result = evaluate_models(
+            "a.pt",
+            "b.pt",
+            num_games=1,
+            simulations=2,
+            backend="rust",
+            max_moves=2,
+            verbose=False,
+        )
+
+        assert result.total_games == 1
+        assert result.draws == 1
+
+    def test_rust_backend_requires_simulations(self, monkeypatch) -> None:
+        from orchestrator.evaluate import evaluate_models
+
+        calls = []
+        self._install_fake_alphazero_py(monkeypatch, calls)
+
+        with pytest.raises(ValueError, match="simulations > 0"):
+            evaluate_models(
+                "a.pt",
+                "b.pt",
+                simulations=0,
+                backend="rust",
+                verbose=False,
+            )
 
 
 # =============================================================================

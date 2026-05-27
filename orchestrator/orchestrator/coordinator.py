@@ -129,6 +129,8 @@ class PipelineConfig:
         eval_games: Number of games for model evaluation.
         eval_simulations: MCTS simulations for evaluation games.
         eval_win_threshold: Win rate threshold to promote new model (default 0.55).
+        eval_backend: Evaluation backend ("auto", "python", "rust").
+        eval_max_moves: Max half-moves per evaluation game.
 
         max_iterations: Maximum number of training iterations (0 = infinite).
         min_games_before_training: Minimum games in buffer before first training.
@@ -169,6 +171,8 @@ class PipelineConfig:
     eval_games: int = 40
     eval_simulations: int = 400
     eval_win_threshold: float = 0.55
+    eval_backend: str = "auto"
+    eval_max_moves: int = 512
 
     # Pipeline
     max_iterations: int = 0
@@ -779,6 +783,8 @@ class Coordinator:
             num_games=self.config.eval_games,
             simulations=self.config.eval_simulations,
             device="cuda" if self._has_cuda() else "cpu",
+            backend=self.config.eval_backend,
+            max_moves=self.config.eval_max_moves,
             verbose=True,
         )
 
@@ -948,6 +954,15 @@ examples:
         help="Number of GPUs for training (default: from config or 1)",
     )
     parser.add_argument(
+        "--eval-backend", type=str, default=None,
+        choices=["auto", "python", "rust"],
+        help="Evaluation backend (default: from config or auto)",
+    )
+    parser.add_argument(
+        "--eval-max-moves", type=int, default=None,
+        help="Max half-moves per evaluation game (default: from config or 512)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print what would be done without executing",
     )
@@ -982,6 +997,10 @@ examples:
         config.train_network = args.network
     if args.gpus is not None:
         config.train_gpus = args.gpus
+    if args.eval_backend is not None:
+        config.eval_backend = args.eval_backend
+    if args.eval_max_moves is not None:
+        config.eval_max_moves = args.eval_max_moves
     config.dry_run = args.dry_run
 
     # Run directory: use provided, or auto-create with timestamp

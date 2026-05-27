@@ -41,6 +41,11 @@ use crate::game::GameRecord;
 pub struct TrainingSample {
     /// The board state at this position.
     pub board: Board,
+    /// Previous board states, most recent first.
+    ///
+    /// The neural encoder consumes up to seven previous positions so that the
+    /// full 8-step AlphaZero history stack can be populated during training.
+    pub history: Vec<Board>,
     /// Policy target: probability distribution over legal moves.
     /// Each (Move, f32) pair maps a legal move to its visit probability.
     pub policy: Vec<(Move, f32)>,
@@ -65,15 +70,24 @@ pub fn extract_samples(record: &GameRecord) -> Vec<TrainingSample> {
     record
         .positions
         .iter()
-        .map(|pos| {
+        .enumerate()
+        .map(|(idx, pos)| {
             // Value from the side-to-move's perspective.
             let value = match pos.side_to_move {
                 Color::White => outcome,  // White's perspective
                 Color::Black => -outcome, // Black's perspective (negate)
             };
 
+            let history = record.positions[..idx]
+                .iter()
+                .rev()
+                .take(7)
+                .map(|previous| previous.board.clone())
+                .collect();
+
             TrainingSample {
                 board: pos.board.clone(),
+                history,
                 policy: pos.policy.clone(),
                 value,
             }
@@ -112,12 +126,14 @@ mod tests {
     fn make_game_record(result: GameResult, num_positions: u32) -> GameRecord {
         let mut positions = Vec::new();
         for i in 0..num_positions {
-            let board = Board::starting_position();
             let side_to_move = if i % 2 == 0 {
                 Color::White
             } else {
                 Color::Black
             };
+            let mut board = Board::starting_position();
+            board.set_side_to_move(side_to_move);
+            board.set_fullmove_number(i as u16 + 1);
 
             // Create a simple policy with one move.
             let policy = vec![(Move::new(Square::E2, Square::E4), 1.0)];
@@ -252,12 +268,13 @@ mod tests {
         let samples = extract_samples(&record);
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].policy.len(), policy.len());
+        assert!(
+            samples[0].history.is_empty(),
+            "First position should have no history"
+        );
 
-        for (i, ((sample_mv, sample_p), (record_mv, record_p))) in samples[0]
-            .policy
-            .iter()
-            .zip(policy.iter())
-            .enumerate()
+        for (i, ((sample_mv, sample_p), (record_mv, record_p))) in
+            samples[0].policy.iter().zip(policy.iter()).enumerate()
         {
             assert_eq!(
                 sample_mv, record_mv,
@@ -272,6 +289,28 @@ mod tests {
                 record_p,
             );
         }
+    }
+
+    #[test]
+    fn history_is_most_recent_first_and_capped() {
+        let record = make_game_record(GameResult::DrawStalemate, 10);
+        let samples = extract_samples(&record);
+
+        assert!(samples[0].history.is_empty());
+        assert_eq!(samples[1].history.len(), 1);
+        assert_eq!(samples[7].history.len(), 7);
+        assert_eq!(samples[8].history.len(), 7);
+
+        assert_eq!(
+            samples[3].history[0].to_fen(),
+            record.positions[2].board.to_fen(),
+            "Most recent previous position should be first"
+        );
+        assert_eq!(
+            samples[3].history[2].to_fen(),
+            record.positions[0].board.to_fen(),
+            "Older positions should follow in reverse chronological order"
+        );
     }
 
     // ========================================================================

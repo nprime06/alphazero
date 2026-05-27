@@ -4,9 +4,14 @@ Reads MessagePack game files written by the Rust self-play worker. Each game
 file contains a header and a list of serialized training samples in the format:
 
     {
-        "header": {"version": 1, "num_samples": N},
+        "header": {"version": 1 or 2, "num_samples": N},
         "samples": [
-            {"fen": "...", "policy": [(index, prob), ...], "value": float},
+            {
+                "fen": "...",
+                "history_fens": ["...", ...],  # v2, optional
+                "policy": [(index, prob), ...],
+                "value": float,
+            },
             ...
         ]
     }
@@ -36,6 +41,8 @@ import numpy as np
 
 # Policy vector size: 8 * 8 * 73 = 4672
 POLICY_SIZE: int = 4672
+SUPPORTED_FORMAT_VERSIONS = {1, 2}
+MAX_HISTORY_FENS: int = 7
 
 
 class ReplayBuffer:
@@ -156,7 +163,7 @@ class ReplayBuffer:
                 - ``policies``: ``(batch_size, 4672)`` float32 array
                 - ``values``: ``(batch_size, 1)`` float32 array
         """
-        from neural.encoding import BoardState, encode_board
+        from neural.encoding import encode_board
 
         positions = self.sample_positions(batch_size)
 
@@ -166,7 +173,7 @@ class ReplayBuffer:
 
         for i, pos in enumerate(positions):
             # Convert FEN to BoardState and encode
-            state = BoardState.from_fen_piece_placement(pos["fen"])
+            state = board_state_from_sample(pos)
             tensor = encode_board(state)
             boards[i] = tensor.numpy()
 
@@ -178,6 +185,50 @@ class ReplayBuffer:
             values[i, 0] = pos["value"]
 
         return boards, policies, values
+
+
+def board_state_from_sample(sample: Dict):
+    """Build a neural ``BoardState`` from a replay sample.
+
+    Version 2 replay samples include up to seven previous positions as FEN
+    strings, most recent first. Older version 1 samples omit this field and
+    therefore encode with empty history, preserving backward compatibility.
+    Repetition counts are reconstructed from the available FEN history.
+    """
+    from neural.encoding import BoardState
+
+    history_fens = list(sample.get("history_fens", []))[:MAX_HISTORY_FENS]
+
+    history_states = []
+    for idx, fen in enumerate(history_fens):
+        repetition_count = _count_repetitions(fen, history_fens[idx + 1:])
+        history_states.append(
+            BoardState.from_fen_piece_placement(
+                fen,
+                repetition_count=repetition_count,
+            )
+        )
+
+    current_repetition_count = _count_repetitions(sample["fen"], history_fens)
+    return BoardState.from_fen_piece_placement(
+        sample["fen"],
+        repetition_count=current_repetition_count,
+        history=history_states,
+    )
+
+
+def _repetition_key(fen: str) -> str:
+    """Return the FEN fields that define repetition identity."""
+    parts = fen.strip().split()
+    if len(parts) >= 4:
+        return " ".join(parts[:4])
+    return parts[0] if parts else ""
+
+
+def _count_repetitions(fen: str, previous_fens: List[str]) -> int:
+    """Count prior occurrences of ``fen`` in a most-recent-first history."""
+    key = _repetition_key(fen)
+    return sum(1 for previous in previous_fens if _repetition_key(previous) == key)
 
 
 def _read_game_file(path: Path) -> List[Dict]:
@@ -195,22 +246,78 @@ def _read_game_file(path: Path) -> List[Dict]:
     with open(path, "rb") as f:
         data = msgpack.unpackb(f.read(), raw=False)
 
-    # The file is a map with "header" and "samples" keys
-    header = data["header"]
-    if header["version"] != 1:
+    header, raw_samples = _decode_game_file(data)
+    version = int(header["version"])
+    if version not in SUPPORTED_FORMAT_VERSIONS:
         raise ValueError(
-            f"Unsupported format version: {header['version']} (expected 1)"
+            f"Unsupported format version: {version} "
+            f"(supported: {sorted(SUPPORTED_FORMAT_VERSIONS)})"
         )
 
     samples = []
-    for raw_sample in data["samples"]:
+    for raw_sample in raw_samples:
+        sample = _decode_sample(raw_sample)
         samples.append({
-            "fen": raw_sample["fen"],
+            "fen": sample["fen"],
+            "history_fens": [
+                str(fen)
+                for fen in sample.get("history_fens", [])[:MAX_HISTORY_FENS]
+            ],
             "policy": [
                 (int(idx), float(prob))
-                for idx, prob in raw_sample["policy"]
+                for idx, prob in sample["policy"]
             ],
-            "value": float(raw_sample["value"]),
+            "value": float(sample["value"]),
         })
 
     return samples
+
+
+def _decode_game_file(data) -> Tuple[Dict, List]:
+    """Decode named-map or tuple-shaped Rust MessagePack game files."""
+    if isinstance(data, dict):
+        return data["header"], data["samples"]
+    if isinstance(data, (list, tuple)) and len(data) == 2:
+        header = _decode_header(data[0])
+        samples = list(data[1])
+        return header, samples
+    raise ValueError("Malformed replay file: expected game file map or tuple")
+
+
+def _decode_header(raw_header) -> Dict:
+    """Decode a GameFileHeader from map or tuple representation."""
+    if isinstance(raw_header, dict):
+        return {
+            "version": raw_header["version"],
+            "num_samples": raw_header["num_samples"],
+        }
+    if isinstance(raw_header, (list, tuple)) and len(raw_header) == 2:
+        return {
+            "version": raw_header[0],
+            "num_samples": raw_header[1],
+        }
+    raise ValueError("Malformed replay file: expected header map or tuple")
+
+
+def _decode_sample(raw_sample) -> Dict:
+    """Decode a SerializedSample from map, v2 tuple, or legacy v1 tuple."""
+    if isinstance(raw_sample, dict):
+        return raw_sample
+    if isinstance(raw_sample, (list, tuple)):
+        if len(raw_sample) == 4:
+            fen, history_fens, policy, value = raw_sample
+            return {
+                "fen": fen,
+                "history_fens": history_fens,
+                "policy": policy,
+                "value": value,
+            }
+        if len(raw_sample) == 3:
+            fen, policy, value = raw_sample
+            return {
+                "fen": fen,
+                "history_fens": [],
+                "policy": policy,
+                "value": value,
+            }
+    raise ValueError("Malformed replay file: expected sample map or tuple")

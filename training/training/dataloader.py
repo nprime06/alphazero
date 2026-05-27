@@ -90,7 +90,8 @@ class ReplayDataset(IterableDataset):
         """Yield encoded training samples from the replay buffer."""
         # Defer the import so that workers that only use DummyDataset do not
         # need the neural package installed.
-        from neural.encoding import BoardState, encode_board
+        from neural.encoding import encode_board
+        from training.buffer import board_state_from_sample
 
         for _ in range(self.samples_per_epoch):
             positions = self.buffer.sample_positions(1)
@@ -99,7 +100,7 @@ class ReplayDataset(IterableDataset):
             pos = positions[0]
 
             # Encode the board position into a (119, 8, 8) tensor
-            state = BoardState.from_fen_piece_placement(pos["fen"])
+            state = board_state_from_sample(pos)
             board_tensor = encode_board(state)  # (119, 8, 8)
 
             # Convert sparse policy to dense (4672,) tensor
