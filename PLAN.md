@@ -1295,6 +1295,10 @@ orchestrator/
 ### Chunk 6.3: Pipeline Coordinator
 **Goal**: Orchestrate the full AlphaZero training loop.
 
+**Current scope**: the coordinator can run the loop inside one local process or
+one Slurm job. True cluster fanout (self-play job arrays, separate training
+jobs, and asynchronous evaluation jobs) is still future work.
+
 **Deliverables**:
 - Coordinator loop:
   1. Launch self-play workers (Slurm job array)
@@ -1466,11 +1470,11 @@ Phase 7 (Bindings & CLI):                          [can start after Phase 1]
 | 5.3 | Checkpointing | `pytest tests/test_checkpoint.py` | DONE (16 tests) |
 | 5.4 | Mixed precision (AMP) | `python -m training.train --amp` | DONE (6 tests) |
 | 5.5 | Distributed training (DDP) | `torchrun --nproc_per_node=2 ...` | HELPERS ONLY (not wired into `training.train`) |
-| 5.6 | Slurm integration | `sbatch scripts/train.sbatch` | DONE (4 scripts) |
+| 5.6 | Slurm integration | `bash training/scripts/submit_coordinator.sh ...` | DONE (single-GPU wrappers; DDP/fanout guarded) |
 | 5.7 | Monitoring (TensorBoard) | `tensorboard --logdir runs/` | DONE (17 tests) |
 | 6.1 | Weight distribution | `pytest tests/test_weights.py` | DONE (16 tests) |
 | 6.2 | Model evaluation | `python -m orchestrator.evaluate` | DONE (37 tests; Python + Rust/PyO3 backends) |
-| 6.3 | Pipeline coordinator | `python -m orchestrator.coordinator` | DONE (27 tests) |
+| 6.3 | Pipeline coordinator | `python -m orchestrator.coordinator` | DONE (27 tests; local/single-job Slurm loop, not distributed fanout) |
 | 7.1 | Chess engine bindings | `pytest tests/test_bindings.py` |
 | 7.2 | MCTS bindings | `pytest tests/test_mcts_bindings.py` |
 | 7.3 | CLI tool | `alphazero --help` | DONE (37 tests) |

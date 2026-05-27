@@ -25,7 +25,7 @@ Usage::
     # Submit to Slurm (recommended):
     ./training/scripts/submit_coordinator.sh --config orchestrator/orchestrator/config.yaml
 
-    # Or run directly on a GPU node:
+    # Or run a small smoke directly on a GPU node:
     python -m orchestrator.coordinator --config orchestrator/orchestrator/config.yaml
 
     # Resume an existing run:
@@ -306,14 +306,10 @@ class Coordinator:
     4. **Promote**: if the new model exceeds the win-rate threshold, it
        becomes the new best model.
 
-    The coordinator is designed with two execution modes in mind:
-
-    - **Local mode** (current): runs self-play as a subprocess, training
-      via direct Python import, and evaluation via the orchestrator's
-      ``evaluate_models`` function.
-    - **Slurm mode** (future): submits jobs to a Slurm cluster. The
-      ``_run_selfplay`` and ``_run_training`` methods are structured to
-      be overridden or swapped for Slurm-based implementations.
+    The current coordinator runs all phases inside one process or one Slurm
+    allocation: self-play as a subprocess, training via direct Python import,
+    and evaluation via ``evaluate_models``. Cluster fanout via self-play job
+    arrays and separate distributed training/evaluation jobs is future work.
 
     Args:
         config: Pipeline configuration.

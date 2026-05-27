@@ -13,6 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 NUM_GPUS=1
+PARTITION="mit_normal_gpu"
+GPU_TYPE="h200"
 NUM_CPUS=10
 MEM=64
 TIME="6:00:00"
@@ -22,6 +24,14 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --gpus)
             NUM_GPUS="$2"
+            shift 2
+            ;;
+        --partition)
+            PARTITION="$2"
+            shift 2
+            ;;
+        --gpu-type)
+            GPU_TYPE="$2"
             shift 2
             ;;
         --cpus)
@@ -44,20 +54,22 @@ mkdir -p "$RUN_DIR"
 
 echo "=== Submitting AlphaZero Self-Play ==="
 echo "  run dir: $RUN_DIR"
+echo "  partition: $PARTITION"
+echo "  gpu type: $GPU_TYPE"
 echo "  selfplay args: $SELFPLAY_ARGS"
 
 sbatch \
     --job-name=az-selfplay \
-    --partition=mit_normal_gpu \
+    --partition="$PARTITION" \
     --nodes=1 \
     --ntasks=1 \
     --cpus-per-task=$NUM_CPUS \
     --mem=${MEM}G \
-    --gres=gpu:h200:$NUM_GPUS \
+    --gres=gpu:${GPU_TYPE}:$NUM_GPUS \
     --time=$TIME \
     --output="${RUN_DIR}/slurm-%j.log" \
     --error="${RUN_DIR}/slurm-%j.err" \
-    --export=ALL,SELFPLAY_ARGS="$SELFPLAY_ARGS" \
+    --export=ALL,PROJECT_DIR="$PROJECT_DIR",SELFPLAY_ARGS="$SELFPLAY_ARGS" \
     "${SCRIPT_DIR}/selfplay.sh"
 
 echo "submitted! logs in $RUN_DIR"

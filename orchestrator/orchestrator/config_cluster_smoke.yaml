@@ -1,0 +1,38 @@
+# AlphaZero Cluster Smoke Configuration
+#
+# This is intentionally tiny: use it to verify a Slurm node can run the full
+# self-play -> train -> evaluate loop without starting a real campaign.
+# Submit with:
+#
+#   bash training/scripts/submit_coordinator.sh \
+#       --config orchestrator/orchestrator/config_cluster_smoke.yaml \
+#       --gpus 1 \
+#       --time 2:00:00 \
+#       --eval-backend rust
+
+# Self-play
+selfplay_games_per_iteration: 2
+selfplay_simulations: 8
+selfplay_max_moves: 40
+selfplay_parallel_games: 1
+selfplay_threads: 1
+selfplay_batch_size: 1
+selfplay_fp16: true
+
+# Training
+train_steps_per_iteration: 5
+train_batch_size: 16
+train_network: tiny
+train_gpus: 1
+
+# Evaluation
+eval_games: 2
+eval_simulations: 4
+eval_backend: rust
+eval_max_moves: 80
+eval_win_threshold: 0.55
+
+# Pipeline
+max_iterations: 1
+min_games_before_training: 1
+weights_keep_n: 5
