@@ -7,8 +7,13 @@ covered by each module's own test suite).
 
 from __future__ import annotations
 
+import os
+import sys
+from types import SimpleNamespace
+
 import pytest
 
+import alphazero.cli as cli
 from alphazero.cli import build_parser, main
 
 
@@ -125,11 +130,39 @@ class TestSelfPlayArgs:
         args = parser.parse_args(["self-play", "--model", "model.pt"])
         assert args.command == "self-play"
         assert args.model == "model.pt"
-        assert args.output_dir == "./games"
-        assert args.num_games == 100
-        assert args.simulations == 800
-        assert args.temperature == 1.0
-        assert args.device == "cuda"
+        assert args.output == "./games"
+        assert args.games == 100
+        assert args.sims == 800
+        assert args.threads == 1
+        assert args.parallel_games == 1
+        assert args.batch_size == 8
+        assert args.max_moves == 512
+        assert args.no_noise is False
+        assert args.c_puct == 2.5
+
+    def test_custom_values(self, parser):
+        args = parser.parse_args([
+            "self-play",
+            "--model", "model.pt",
+            "--output", "/tmp/games",
+            "--games", "12",
+            "--sims", "64",
+            "--threads", "2",
+            "--parallel-games", "3",
+            "--batch-size", "6",
+            "--max-moves", "200",
+            "--no-noise",
+            "--c-puct", "1.75",
+        ])
+        assert args.output == "/tmp/games"
+        assert args.games == 12
+        assert args.sims == 64
+        assert args.threads == 2
+        assert args.parallel_games == 3
+        assert args.batch_size == 6
+        assert args.max_moves == 200
+        assert args.no_noise is True
+        assert args.c_puct == 1.75
 
     def test_missing_model_exits(self, parser):
         with pytest.raises(SystemExit) as exc_info:
@@ -223,17 +256,35 @@ class TestPipelineArgs:
         args = parser.parse_args(["pipeline", "--config", "config.yaml"])
         assert args.command == "pipeline"
         assert args.config == "config.yaml"
+        assert args.run_dir is None
+        assert args.project_dir is None
+        assert args.iterations is None
+        assert args.network is None
+        assert args.gpus is None
         assert args.dry_run is False
 
-    def test_dry_run(self, parser):
+    def test_overrides(self, parser):
         args = parser.parse_args([
-            "pipeline", "--config", "config.yaml", "--dry-run",
+            "pipeline",
+            "--config", "config.yaml",
+            "--run-dir", "/tmp/run",
+            "--project-dir", "/tmp/project",
+            "--iterations", "3",
+            "--network", "tiny",
+            "--gpus", "2",
+            "--dry-run",
         ])
+        assert args.run_dir == "/tmp/run"
+        assert args.project_dir == "/tmp/project"
+        assert args.iterations == 3
+        assert args.network == "tiny"
+        assert args.gpus == 2
         assert args.dry_run is True
 
-    def test_missing_config_exits(self, parser):
-        with pytest.raises(SystemExit):
-            parser.parse_args(["pipeline"])
+    def test_config_is_optional(self, parser):
+        args = parser.parse_args(["pipeline", "--dry-run"])
+        assert args.config is None
+        assert args.dry_run is True
 
 
 # ============================================================================
@@ -269,30 +320,186 @@ class TestExportArgs:
 
 
 # ============================================================================
-# Placeholder subcommands: self-play, play, analyze produce expected output
+# Executing wrapper subcommands: self-play, play, analyze
 # ============================================================================
 
-class TestPlaceholderOutput:
-    """Verify that placeholder subcommands print informative messages."""
+class TestExecutingSubcommands:
+    """Verify command construction without launching real Rust binaries."""
 
-    def test_selfplay_prints_rust_hint(self, capsys):
-        main(["self-play", "--model", "model.pt"])
-        captured = capsys.readouterr()
-        assert "cargo run" in captured.out
-        assert "self-play" in captured.out
+    def test_selfplay_invokes_rust_binary_with_torch_env(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        binary = tmp_path / "self-play"
+        binary.write_text("")
+        torch_lib = tmp_path / "torch" / "lib"
+        torch_lib.mkdir(parents=True)
+        calls = {}
 
-    def test_play_prints_rust_hint(self, capsys):
+        def fake_run(cmd, env=None):
+            calls["cmd"] = cmd
+            calls["env"] = env
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(cli, "_release_binary", lambda name: binary)
+        monkeypatch.setattr(cli, "_find_torch_lib_dir", lambda: torch_lib)
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        monkeypatch.setenv("DYLD_LIBRARY_PATH", "/existing")
+
+        main([
+            "self-play",
+            "--model", "model.pt",
+            "--output", "/tmp/games",
+            "--games", "12",
+            "--sims", "64",
+            "--threads", "2",
+            "--parallel-games", "3",
+            "--batch-size", "6",
+            "--max-moves", "200",
+            "--no-noise",
+            "--c-puct", "1.75",
+        ])
+
+        assert calls["cmd"] == [
+            str(binary),
+            "--model", "model.pt",
+            "--games", "12",
+            "--output", "/tmp/games",
+            "--sims", "64",
+            "--threads", "2",
+            "--parallel-games", "3",
+            "--batch-size", "6",
+            "--max-moves", "200",
+            "--no-noise",
+            "--c-puct", "1.75",
+        ]
+        assert calls["env"]["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(torch_lib)
+        assert calls["env"]["LD_LIBRARY_PATH"].split(os.pathsep)[0] == str(torch_lib)
+        assert "Running self-play" in capsys.readouterr().out
+
+    def test_selfplay_missing_binary_exits(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "_release_binary", lambda name: tmp_path / "missing")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["self-play", "--model", "model.pt"])
+
+        assert exc_info.value.code == 1
+        assert "cargo build --release -p self-play" in capsys.readouterr().err
+
+    def test_play_invokes_interactive_binary(self, tmp_path, monkeypatch, capsys):
+        binary = tmp_path / "play"
+        binary.write_text("")
+        calls = {}
+
+        def fake_run(cmd):
+            calls["cmd"] = cmd
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(cli, "_release_binary", lambda name: binary)
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
         main(["play"])
-        captured = capsys.readouterr()
-        assert "cargo run" in captured.out
-        assert "chess-engine" in captured.out
 
-    def test_analyze_prints_pyo3_hint(self, capsys):
+        assert calls["cmd"] == [str(binary)]
+        assert "Launching interactive board" in capsys.readouterr().out
+
+    def test_play_rejects_model_options(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            main(["play", "--model", "model.pt"])
+
+        assert exc_info.value.code == 2
+        assert "model-vs-human play is not wired" in capsys.readouterr().err
+
+    def test_analyze_uses_uniform_search(self, monkeypatch, capsys):
         fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-        main(["analyze", "--fen", fen])
-        captured = capsys.readouterr()
-        assert fen in captured.out
-        assert "PyO3" in captured.out
+        calls = {}
+
+        class FakeBoard:
+            @staticmethod
+            def from_fen(value):
+                calls["fen"] = value
+                return "board"
+
+        def fake_search_uniform(board, simulations, temperature, c_puct):
+            calls["search"] = (board, simulations, temperature, c_puct)
+            return SimpleNamespace(
+                moves=[("d2d4", 7), ("e2e4", 9)],
+                total_simulations=16,
+                root_value=0.25,
+                best_move="e2e4",
+            )
+
+        fake_module = SimpleNamespace(
+            Board=FakeBoard,
+            search_uniform=fake_search_uniform,
+        )
+        monkeypatch.setitem(sys.modules, "alphazero_py", fake_module)
+        monkeypatch.setattr(cli, "_install_torch_lib_env", lambda: None)
+
+        main(["analyze", "--fen", fen, "--simulations", "16"])
+
+        assert calls["fen"] == fen
+        assert calls["search"] == ("board", 16, 1.0, 2.5)
+        out = capsys.readouterr().out
+        assert "Best move: e2e4" in out
+        assert "Root value: 0.2500" in out
+        assert "e2e4: 9 visits" in out
+
+    def test_analyze_uses_model_search(self, monkeypatch, capsys):
+        fen = "8/8/8/8/8/8/8/K6k w - - 0 1"
+        calls = {}
+
+        class FakeBoard:
+            @staticmethod
+            def from_fen(value):
+                return "board"
+
+        def fake_search_with_model(
+            board, model, simulations, temperature, c_puct, device
+        ):
+            calls["search"] = (
+                board,
+                model,
+                simulations,
+                temperature,
+                c_puct,
+                device,
+            )
+            return SimpleNamespace(
+                moves=[("a1a2", 4)],
+                total_simulations=4,
+                root_value=-0.5,
+                best_move="a1a2",
+            )
+
+        fake_module = SimpleNamespace(
+            Board=FakeBoard,
+            search_with_model=fake_search_with_model,
+        )
+        monkeypatch.setitem(sys.modules, "alphazero_py", fake_module)
+        monkeypatch.setattr(cli, "_install_torch_lib_env", lambda: None)
+
+        main([
+            "analyze",
+            "--fen", fen,
+            "--model", "model.pt",
+            "--simulations", "4",
+            "--device", "cuda",
+        ])
+
+        assert calls["search"] == ("board", "model.pt", 4, 1.0, 2.5, "cuda")
+        assert "Model: model.pt" in capsys.readouterr().out
+
+    def test_analyze_missing_bindings_exits(self, monkeypatch, capsys):
+        monkeypatch.setitem(sys.modules, "alphazero_py", None)
+        monkeypatch.setattr(cli, "_install_torch_lib_env", lambda: None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["analyze", "--fen", "8/8/8/8/8/8/8/K6k w - - 0 1"])
+
+        assert exc_info.value.code == 1
+        assert "maturin develop --manifest-path alphazero-py/Cargo.toml" in (
+            capsys.readouterr().err
+        )
 
 
 # ============================================================================

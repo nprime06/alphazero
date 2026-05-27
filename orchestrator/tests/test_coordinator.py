@@ -6,10 +6,14 @@ without actually running self-play or training.
 
 from __future__ import annotations
 
+import os
+from types import SimpleNamespace
+
 import yaml
 import pytest
 from pathlib import Path
 
+import orchestrator.coordinator as coordinator_module
 from orchestrator.coordinator import PipelineConfig, PipelineState, Coordinator
 
 
@@ -365,6 +369,79 @@ class TestCoordinator:
         # Write a version
         (tmp_path / "weights" / "latest.txt").write_text("5")
         assert coordinator._get_latest_weight_version() == 5
+
+    def test_run_selfplay_builds_real_command_with_torch_env(
+        self, tmp_path, monkeypatch
+    ):
+        """Local self-play uses Rust flags and injects torch/lib paths."""
+        weights_dir = tmp_path / "weights"
+        weights_dir.mkdir()
+        (weights_dir / "latest.txt").write_text("1")
+        (weights_dir / "model_v000001.pt").write_bytes(b"model")
+
+        binary = tmp_path / "target" / "release" / "self-play"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("")
+
+        config = self._make_config(
+            tmp_path,
+            dry_run=False,
+            selfplay_games_per_iteration=7,
+            selfplay_simulations=11,
+            selfplay_max_moves=99,
+            selfplay_parallel_games=3,
+            selfplay_threads=2,
+            selfplay_batch_size=0,
+        )
+        coordinator = Coordinator(config)
+
+        torch_lib = tmp_path / "torch" / "lib"
+        torch_lib.mkdir(parents=True)
+        calls = {}
+
+        def fake_run(cmd, env=None):
+            calls["cmd"] = cmd
+            calls["env"] = env
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(
+            coordinator_module,
+            "_find_torch_lib_dir",
+            lambda: torch_lib,
+        )
+        monkeypatch.setattr(coordinator_module.subprocess, "run", fake_run)
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/existing")
+
+        coordinator._run_selfplay()
+
+        assert calls["cmd"] == [
+            str(binary),
+            "--model", str(weights_dir / "model_v000001.pt"),
+            "--games", "7",
+            "--output", str(tmp_path / "data"),
+            "--sims", "11",
+            "--max-moves", "99",
+            "--parallel-games", "3",
+            "--threads", "2",
+            "--batch-size", "6",
+        ]
+        assert calls["env"]["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(torch_lib)
+        assert calls["env"]["LD_LIBRARY_PATH"].split(os.pathsep)[0] == str(torch_lib)
+
+    def test_run_selfplay_missing_binary_fails_with_build_command(self, tmp_path):
+        """A local run stops clearly when the release binary is missing."""
+        weights_dir = tmp_path / "weights"
+        weights_dir.mkdir()
+        (weights_dir / "latest.txt").write_text("1")
+        (weights_dir / "model_v000001.pt").write_bytes(b"model")
+
+        config = self._make_config(tmp_path, dry_run=False)
+        coordinator = Coordinator(config)
+
+        with pytest.raises(FileNotFoundError) as exc_info:
+            coordinator._run_selfplay()
+
+        assert "cargo build --release -p self-play" in str(exc_info.value)
 
     def test_promote_model(self, tmp_path):
         """Promote updates best_model_version in state."""

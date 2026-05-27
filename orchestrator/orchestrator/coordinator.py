@@ -37,15 +37,62 @@ from __future__ import annotations
 import argparse
 import datetime
 import logging
+import os
 import shutil
 import subprocess
 import time
 import yaml
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Runtime helpers
+# ============================================================================
+
+
+def _prepend_path(existing: str | None, path: Path) -> str:
+    """Prepend a directory to a path-like environment variable."""
+    path_str = str(path)
+    parts = [p for p in (existing or "").split(os.pathsep) if p]
+    parts = [p for p in parts if p != path_str]
+    return os.pathsep.join([path_str, *parts])
+
+
+def _find_torch_lib_dir() -> Path | None:
+    """Locate the active Python environment's torch/lib directory."""
+    try:
+        import torch
+    except ImportError:
+        return None
+
+    torch_paths = getattr(torch, "__path__", None)
+    if torch_paths:
+        lib_dir = Path(next(iter(torch_paths))) / "lib"
+    else:
+        torch_file = getattr(torch, "__file__", None)
+        if torch_file is None:
+            return None
+        lib_dir = Path(torch_file).resolve().parent / "lib"
+
+    return lib_dir if lib_dir.is_dir() else None
+
+
+def _env_with_torch_libs(
+    base_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return an environment with torch/lib first in dylib search paths."""
+    env = dict(os.environ if base_env is None else base_env)
+    torch_lib = _find_torch_lib_dir()
+    if torch_lib is None:
+        return env
+
+    for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        env[key] = _prepend_path(env.get(key), torch_lib)
+    return env
 
 
 # ============================================================================
@@ -522,12 +569,10 @@ class Coordinator:
 
         selfplay_binary = self._project_dir / "target" / "release" / "self-play"
         if not selfplay_binary.exists():
-            logger.error(
-                "Self-play binary not found at %s. "
-                "Build with: cargo build --release -p self-play",
-                selfplay_binary,
+            raise FileNotFoundError(
+                f"Self-play binary not found at {selfplay_binary}. "
+                "Build with: cargo build --release -p self-play"
             )
-            return
 
         # Batch size should equal the number of concurrent NN request sources
         # (parallel_games * threads) so the inference server fires immediately
@@ -555,12 +600,13 @@ class Coordinator:
 
         # Stream output in real-time (no capture) so progress is visible
         # in the Slurm log as games complete.
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, env=_env_with_torch_libs())
 
         if result.returncode != 0:
             logger.error(
                 "Self-play failed with exit code %d", result.returncode
             )
+            raise subprocess.CalledProcessError(result.returncode, cmd)
         else:
             logger.info("Self-play completed successfully")
 
@@ -928,6 +974,8 @@ examples:
     # CLI overrides
     if args.project_dir is not None:
         config.project_dir = args.project_dir
+    elif args.config is None:
+        config.project_dir = str(Path.cwd())
     if args.iterations is not None:
         config.max_iterations = args.iterations
     if args.network is not None:

@@ -113,10 +113,10 @@ Time per move ≈ 800 × (inference_latency / batch_size) + tree_overhead
 
 | Preset | Blocks | Filters | Params | Use Case |
 |--------|--------|---------|--------|----------|
-| Tiny | 5 | 64 | ~200K | Debugging, learning, fast experiments |
-| Small | 10 | 128 | ~3M | Overnight training runs |
-| Medium | 15 | 192 | ~7M | Multi-day training |
-| Full | 19 | 256 | ~12M | The real deal, matches original paper |
+| Tiny | 5 | 64 | ~1.1M | Debugging, learning, fast experiments |
+| Small | 10 | 128 | ~3.7M | Overnight training runs |
+| Medium | 15 | 192 | ~10.8M | Multi-day training |
+| Full | 19 | 256 | ~23.3M | The real deal, matches original paper |
 
 All presets use the same code with different config values. Block count, filter
 count, policy head size, and value head size are all configurable.
@@ -1327,7 +1327,7 @@ orchestrator/
 **Goal**: Expose chess engine to Python for testing and integration.
 
 **Deliverables**:
-- `PyBoard` class: FEN parsing, legal moves, make move, game state
+- `Board` class: FEN parsing, legal moves, make move, game state
 - `PyMove` class: from/to/promotion
 - Compatible with training code (can use for encoding verification)
 
@@ -1455,7 +1455,7 @@ Phase 7 (Bindings & CLI):                          [can start after Phase 1]
 | 3.8 | NN-guided search | `cargo test guided` | DONE (12 tests) |
 | 3.9a | Batched async inference | `cargo test batch && cargo bench` | DONE (10 tests) |
 | 3.9b | Parallel search (atomics) | `cargo test parallel && cargo bench` | DONE (9 tests) |
-| 3.10 | Tree reuse + transpositions | `cargo test reuse && cargo test transposition` | DONE (18 tests) |
+| 3.10 | Tree reuse + transpositions | `cargo test reuse && cargo test transposition` | DONE (helpers implemented; not wired into main search) |
 | 4.1 | Game loop | `cargo run -p self-play -- --games 1` | DONE (14 tests) |
 | 4.2 | Data collection | `cargo test data` | DONE (13 tests) |
 | 4.3 | Serialization | `cargo test serialize` | DONE (11 tests) |
@@ -1465,7 +1465,7 @@ Phase 7 (Bindings & CLI):                          [can start after Phase 1]
 | 5.2 | Training loop + torch.compile | `python -m training.train --steps 100` | DONE (16 tests) |
 | 5.3 | Checkpointing | `pytest tests/test_checkpoint.py` | DONE (16 tests) |
 | 5.4 | Mixed precision (AMP) | `python -m training.train --amp` | DONE (6 tests) |
-| 5.5 | Distributed training (DDP) | `torchrun --nproc_per_node=2 ...` | DONE (10 tests) |
+| 5.5 | Distributed training (DDP) | `torchrun --nproc_per_node=2 ...` | HELPERS ONLY (not wired into `training.train`) |
 | 5.6 | Slurm integration | `sbatch scripts/train.sbatch` | DONE (4 scripts) |
 | 5.7 | Monitoring (TensorBoard) | `tensorboard --logdir runs/` | DONE (17 tests) |
 | 6.1 | Weight distribution | `pytest tests/test_weights.py` | DONE (16 tests) |

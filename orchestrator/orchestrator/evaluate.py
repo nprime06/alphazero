@@ -1,8 +1,8 @@
 """Model evaluation for AlphaZero training.
 
 Plays games between two neural network models to measure strength progression.
-Uses a simple pure-Python MCTS implementation since the Rust MCTS bindings
-aren't available yet (Phase 7).
+Uses a simple pure-Python MCTS implementation. Rust/PyO3 search bindings exist
+for direct analysis, but this evaluation path is not wired to them yet.
 
 The evaluation flow:
 1. Load two TorchScript models (current vs previous)

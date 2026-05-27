@@ -15,8 +15,8 @@ A from-scratch implementation of [DeepMind's AlphaZero](https://arxiv.org/abs/17
         ▼                       ▼                       ▼
 ┌───────────────┐    ┌───────────────────┐    ┌───────────────────┐
 │  Self-Play    │    │  Training Loop    │    │   Evaluation      │
-│  Workers      │    │  (Distributed)    │    │    Workers        │
-│  (Rust)       │    │  (PyTorch DDP)    │    │  (Python)         │
+│  Workers      │    │  (Single-process) │    │    Workers        │
+│  (Rust)       │    │  (PyTorch)        │    │  (Python MCTS)    │
 └───────────────┘    └───────────────────┘    └───────────────────┘
         │                       │                       │
         ▼                       ▼                       ▼
@@ -47,7 +47,7 @@ alphazero/
 ├── neural/                    # Phase 2: Neural network (Python/PyTorch)
 ├── mcts/                      # Phase 3: Monte Carlo Tree Search (Rust)
 ├── self-play/                 # Phase 4: Self-play data generation (Rust)
-├── training/                  # Phase 5: Distributed training (Python)
+├── training/                  # Phase 5: Training loop and DDP helpers (Python)
 ├── orchestrator/              # Phase 6: Pipeline coordination (Python)
 ├── alphazero-py/              # Phase 7a: PyO3 Python bindings (Rust)
 └── alphazero/                 # Phase 7b: Unified CLI (Python)
@@ -113,14 +113,19 @@ neural/
 **Network sizes:**
 | Preset | Blocks | Filters | Parameters |
 |--------|--------|---------|------------|
-| tiny   | 5      | 64      | ~600K      |
-| small  | 10     | 128     | ~5M        |
-| medium | 15     | 192     | ~16M       |
-| full   | 19     | 256     | ~40M       |
+| tiny   | 5      | 64      | ~1.1M      |
+| small  | 10     | 128     | ~3.7M      |
+| medium | 15     | 192     | ~10.8M     |
+| full   | 19     | 256     | ~23.3M     |
 
 **Input encoding** (119 planes of 8×8):
 - 112 history planes: 8 time steps × 14 planes (6 own pieces + 6 opponent pieces + 2 repetition counts)
 - 7 auxiliary planes: side to move, move count, 4 castling rights, halfmove clock
+
+Current self-play replay files store FEN, policy, and value only. Training
+samples reconstructed from replay therefore populate the current-position
+planes; full history/repetition replay is supported by the encoder API but is
+not wired into the pipeline yet.
 
 **Policy output**: 4672 logits = 8×8 source squares × 73 move types (56 queen-type + 8 knight + 9 underpromotions)
 
@@ -146,8 +151,8 @@ mcts/
     ├── search.rs              # Complete search loop: select → expand → evaluate → backup
     ├── nn.rs                  # TorchScript model loading, board encoding, move encoding (matches Python)
     ├── batch.rs               # InferenceServer: async batched NN evaluation across worker threads
-    ├── reuse.rs               # Tree reuse: carry over subtree after making a move
-    └── transposition.rs       # Transposition table: cache (policy, value) by Zobrist hash
+    ├── reuse.rs               # Tree reuse helper, implemented but not wired into self-play
+    └── transposition.rs       # Transposition table helper, implemented but not wired into search
 ```
 
 **Key design decisions:**
@@ -184,9 +189,12 @@ self-play/
 
 ---
 
-## `training/` — Distributed Training Pipeline
+## `training/` — Training Pipeline
 
-PyTorch training loop with DDP multi-GPU support, mixed precision, checkpointing, and Slurm integration.
+PyTorch training loop with mixed precision, checkpointing, Slurm scripts, and
+DDP utility scaffolding. The main `training.train` entrypoint is currently a
+single-process trainer; the DDP helpers and `torchrun` script are not fully
+wired into the training loop yet.
 
 ```
 training/
@@ -254,7 +262,7 @@ Native Python extension exposing the Rust chess engine and MCTS to Python.
 alphazero-py/
 ├── Cargo.toml
 └── src/
-    └── lib.rs                 # PyO3 bindings: PyBoard, PySearchResult, search functions
+    └── lib.rs                 # PyO3 bindings: Board, SearchResult, search functions
 ```
 
 **Python API:**
@@ -262,8 +270,8 @@ alphazero-py/
 import alphazero_py
 
 # Chess board (python-chess-like API)
-board = alphazero_py.PyBoard()              # Starting position
-board = alphazero_py.PyBoard.from_fen(fen)  # From FEN
+board = alphazero_py.Board()                # Starting position
+board = alphazero_py.Board.from_fen(fen)    # From FEN
 board.legal_moves()                         # ["e2e4", "d2d4", ...]
 board.push("e2e4")                          # Make move (UCI notation)
 board.pop()                                 # Undo last move
@@ -296,10 +304,10 @@ alphazero/
 │   ├── __init__.py
 │   └── cli.py                 # Subcommands: train, self-play, evaluate, play, analyze, pipeline, export
 └── tests/
-    └── test_cli.py            # Argument parsing, help text, placeholder output
+    └── test_cli.py            # Argument parsing, wrappers, help text
 ```
 
-**31 tests.**
+**36 tests.**
 
 ---
 
@@ -328,18 +336,24 @@ pip install -e training/
 pip install -e orchestrator/
 pip install -e alphazero/
 
-# Set up Rust environment for tch-rs
-export LIBTORCH=$(python -c "import torch; print(torch.__path__[0])")
-export LD_LIBRARY_PATH=$LIBTORCH/lib:$LD_LIBRARY_PATH
+# Set up Rust build/test environment for tch-rs
+export LIBTORCH_USE_PYTORCH=1
+export TORCH_LIB=$(python -c "import torch; print(torch.__path__[0] + '/lib')")
+export DYLD_LIBRARY_PATH=$TORCH_LIB:${DYLD_LIBRARY_PATH:-}  # macOS
+export LD_LIBRARY_PATH=$TORCH_LIB:${LD_LIBRARY_PATH:-}      # Linux
 
 # Build Rust crates
 cargo build --release
+
+# Optional: install the PyO3 bindings used by `alphazero analyze`
+pip install maturin
+maturin develop --manifest-path alphazero-py/Cargo.toml
 ```
 
 ### Play Chess Interactively
 
 ```bash
-cargo run -p chess-engine --bin play --release
+alphazero play
 ```
 
 Uses standard algebraic notation:
@@ -356,7 +370,7 @@ Type moves in SAN (e.g. e4, Nf3, O-O) or a command:
 ### Run Self-Play
 
 ```bash
-cargo run -p self-play --release -- \
+alphazero self-play \
     --model model.pt \
     --games 100 \
     --output ./data/ \
@@ -393,8 +407,20 @@ bash training/scripts/submit_train.sh --gpus 1 --dummy-data --network tiny --ste
 bash training/scripts/submit_selfplay.sh --gpus 1
 
 # Run the full pipeline
-alphazero pipeline --config orchestrator/orchestrator/config.yaml
+alphazero pipeline --config orchestrator/orchestrator/config.yaml --iterations 5
 ```
+
+Local `alphazero self-play`, `alphazero play`, and coordinator self-play runs
+expect the relevant release binaries to already exist. Build them with:
+
+```bash
+cargo build --release -p self-play
+cargo build --release -p chess-engine --bin play
+```
+
+`alphazero analyze --fen ... [--model model.pt]` uses the `alphazero_py`
+bindings when installed. Without `--model`, it runs Rust MCTS with a uniform
+evaluator.
 
 ### Export a Checkpoint to TorchScript
 
@@ -408,12 +434,20 @@ alphazero export --checkpoint checkpoints/checkpoint_step_0001000.pt --output mo
 # Rust tests (chess engine)
 cargo test -p chess-engine
 
-# All Python tests
-PYTHONPATH=neural:training:orchestrator python -m pytest neural/tests/ training/tests/ orchestrator/tests/ alphazero/tests/ -v
+# Rust tests that use tch/libtorch
+LIBTORCH_USE_PYTORCH=1 DYLD_LIBRARY_PATH="$PWD/.venv/lib/python3.13/site-packages/torch/lib" cargo test -p mcts
+LIBTORCH_USE_PYTORCH=1 DYLD_LIBRARY_PATH="$PWD/.venv/lib/python3.13/site-packages/torch/lib" cargo test -p self-play
+LIBTORCH_USE_PYTORCH=1 DYLD_LIBRARY_PATH="$PWD/.venv/lib/python3.13/site-packages/torch/lib" cargo test -p alphazero-py
 
-# Full Rust workspace (requires CUDA for mcts/self-play tests)
-cargo test --workspace
+# Python tests: run package suites separately to avoid tests/ import collisions
+.venv/bin/python -m pytest neural/tests -q
+.venv/bin/python -m pytest training/tests -q
+.venv/bin/python -m pytest orchestrator/tests -q
+.venv/bin/python -m pytest alphazero/tests -q
 ```
+
+On Linux, use `LD_LIBRARY_PATH` instead of or in addition to
+`DYLD_LIBRARY_PATH` for the Rust `tch` tests and runtime commands.
 
 ## Test Summary
 
@@ -424,9 +458,9 @@ cargo test --workspace
 | mcts | 168 passed | Requires libtorch at runtime |
 | self-play | 62 passed | Requires libtorch at runtime |
 | training | 98 passed | CPU-only tests with tiny network |
-| orchestrator | 74 passed | Pure Python MCTS for evaluation |
-| alphazero (CLI) | 31 passed | Argument parsing and help text |
-| **Total** | **~1,275** | |
+| orchestrator | 76 passed | Pure Python MCTS for evaluation |
+| alphazero (CLI) | 36 passed | Argument parsing, wrappers, and help text |
+| **Total** | **~1,282** | |
 
 ## Hardware Target
 
