@@ -282,6 +282,17 @@ class MCTSNode:
         return self.value_sum / self.visits
 
 
+def _model_input_dtype(model: torch.nn.Module) -> torch.dtype:
+    """Return the floating dtype expected by ``model`` inputs."""
+    for tensor in model.parameters():
+        if tensor.is_floating_point():
+            return tensor.dtype
+    for tensor in model.buffers():
+        if tensor.is_floating_point():
+            return tensor.dtype
+    return torch.float32
+
+
 def _evaluate_position(
     board: "chess.Board",
     model: torch.jit.ScriptModule,
@@ -301,7 +312,10 @@ def _evaluate_position(
         perspective in [-1, 1].
     """
     state = _board_to_board_state(board)
-    tensor = encode_board(state).unsqueeze(0).to(device)
+    tensor = encode_board(state).unsqueeze(0).to(
+        device=device,
+        dtype=_model_input_dtype(model),
+    )
     is_black = board.turn == chess.BLACK
 
     with torch.no_grad():

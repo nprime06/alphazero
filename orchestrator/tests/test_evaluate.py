@@ -355,6 +355,33 @@ class TestMCTSSearch:
         for uci in dist:
             assert uci in legal_ucis
 
+    def test_evaluate_position_uses_model_dtype(self) -> None:
+        """Evaluator inputs should match FP16 TorchScript weights."""
+        from neural.moves import POLICY_SIZE
+        from orchestrator.evaluate import _evaluate_position
+
+        class DtypeCheckingModel(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.weight = torch.nn.Parameter(
+                    torch.ones((), dtype=torch.float16)
+                )
+
+            def forward(self, tensor: torch.Tensor):
+                assert tensor.dtype == self.weight.dtype
+                policy = torch.zeros((1, POLICY_SIZE), dtype=torch.float32)
+                value = torch.zeros((1, 1), dtype=torch.float32)
+                return policy, value
+
+        policy, value = _evaluate_position(
+            chess.Board(),
+            DtypeCheckingModel(),
+            device="cpu",
+        )
+
+        assert policy
+        assert value == 0.0
+
 
 # =============================================================================
 # TestRustBackedSearch
