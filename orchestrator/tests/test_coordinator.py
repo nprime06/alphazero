@@ -376,6 +376,21 @@ class TestCoordinator:
         (tmp_path / "weights" / "latest.txt").write_text("5")
         assert coordinator._get_latest_weight_version() == 5
 
+    def test_run_evaluation_missing_best_model_fails(self, tmp_path):
+        """A missing best weight should not silently promote the candidate."""
+        config = self._make_config(tmp_path, dry_run=False)
+        coordinator = Coordinator(config)
+        coordinator.state.best_model_version = 2
+
+        weights_dir = tmp_path / "weights"
+        (weights_dir / "latest.txt").write_text("4")
+        (weights_dir / "model_v000004.pt").write_bytes(b"candidate")
+
+        with pytest.raises(FileNotFoundError) as exc_info:
+            coordinator._run_evaluation()
+
+        assert "Refusing to auto-promote v4" in str(exc_info.value)
+
     def test_run_selfplay_builds_real_command_with_torch_env(
         self, tmp_path, monkeypatch
     ):

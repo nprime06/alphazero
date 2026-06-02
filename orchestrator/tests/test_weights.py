@@ -88,6 +88,21 @@ class TestWeightPublisher:
             "model_v000007.pt",
         ]
 
+    def test_cleanup_preserves_protected_versions(self, tmp_path):
+        publisher = WeightPublisher(str(tmp_path), keep_n=3, protected_versions=[2])
+        model = _make_model()
+        for i in range(7):
+            publisher.publish(model, step=i * 100)
+
+        model_files = sorted(tmp_path.glob("model_v*.pt"))
+        names = [f.name for f in model_files]
+        assert names == [
+            "model_v000002.pt",
+            "model_v000005.pt",
+            "model_v000006.pt",
+            "model_v000007.pt",
+        ]
+
     def test_version_survives_restart(self, tmp_path):
         model = _make_model()
         publisher1 = WeightPublisher(str(tmp_path))

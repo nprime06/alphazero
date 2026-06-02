@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 import torch
@@ -51,11 +52,20 @@ class WeightPublisher:
         keep_n: Number of weight versions to keep. Older versions are deleted.
     """
 
-    def __init__(self, weights_dir: str, keep_n: int = 5, fp16: bool = False) -> None:
+    def __init__(
+        self,
+        weights_dir: str,
+        keep_n: int = 5,
+        fp16: bool = False,
+        protected_versions: Iterable[int] | None = None,
+    ) -> None:
         self._weights_dir = Path(weights_dir)
         self._weights_dir.mkdir(parents=True, exist_ok=True)
         self._keep_n = keep_n
         self._fp16 = fp16
+        self._protected_versions = {
+            version for version in (protected_versions or []) if version > 0
+        }
 
         # Recover version counter from latest.txt if it exists (allows
         # restarting the coordinator without resetting the version sequence).
@@ -133,10 +143,16 @@ class WeightPublisher:
         return model_path
 
     def _cleanup_old(self) -> None:
-        """Delete old weight files, keeping only the most recent keep_n."""
+        """Delete old weight files while preserving protected versions."""
         model_files = sorted(self._weights_dir.glob("model_v*.pt"))
-        if len(model_files) > self._keep_n:
-            for old in model_files[: len(model_files) - self._keep_n]:
+        protected_names = {
+            f"model_v{version:06d}.pt" for version in self._protected_versions
+        }
+        unprotected = [
+            path for path in model_files if path.name not in protected_names
+        ]
+        if len(unprotected) > self._keep_n:
+            for old in unprotected[: len(unprotected) - self._keep_n]:
                 old.unlink()
 
     @property

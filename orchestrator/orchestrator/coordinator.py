@@ -698,6 +698,7 @@ class Coordinator:
             str(self._weights_dir),
             keep_n=self.config.weights_keep_n,
             fp16=self.config.selfplay_fp16,
+            protected_versions=self._protected_weight_versions(),
         )
         weight_path = publisher.publish(trainer.model, step=trainer.step)
         logger.info("Weights published: %s (v%d)", weight_path, publisher.current_version)
@@ -756,12 +757,16 @@ class Coordinator:
         )
 
         if not best_path.exists():
-            logger.warning(
-                "Best model file missing (%s). Auto-promoting v%d.",
-                best_path,
-                latest_version,
+            raise FileNotFoundError(
+                "Best model file missing "
+                f"({best_path}). Refusing to auto-promote v{latest_version}."
             )
-            return True
+
+        if not candidate_path.exists():
+            raise FileNotFoundError(
+                "Candidate model file missing "
+                f"({candidate_path}). Cannot evaluate v{latest_version}."
+            )
 
         # Run the evaluation match
         from orchestrator.evaluate import evaluate_models
@@ -800,6 +805,12 @@ class Coordinator:
                 self.config.eval_win_threshold * 100,
             )
             return False
+
+    def _protected_weight_versions(self) -> list[int]:
+        """Weight versions that must survive retention cleanup."""
+        if self.state.best_model_version > 0:
+            return [self.state.best_model_version]
+        return []
 
     # ------------------------------------------------------------------ #
     # Model promotion
