@@ -470,6 +470,9 @@ Coordinator submissions also write `runs/slurm_setup/latest_orcd_jobs.txt`
 with the Slurm job id, run directory, source commit, requested resources, and
 previous submitted coordinator job so monitors can recover state without
 scraping terminal output.
+Use `training/scripts/orcd_status.sh` on the login node to print queue,
+submission, doctor, artifact-count, and recent-log status without mutating
+jobs or run data.
 
 Current cluster limitations:
 - `training.train` is single-process; DDP helpers exist, but Slurm wrappers
