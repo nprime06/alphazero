@@ -18,6 +18,8 @@
 #   --mem N           Memory in GB (default: 128)
 #   --time HH:MM:SS   Wall time limit (default: 24:00:00)
 #   --run-dir DIR     Resume an existing run directory
+#   --skip-resume-doctor
+#                    Do not run run-integrity checks before resuming
 #   All other args are passed through to the coordinator
 
 set -euo pipefail
@@ -34,6 +36,7 @@ MEM=128
 TIME="6:00:00"
 RUN_DIR=""
 COORDINATOR_ARGS=""
+RESUME_DOCTOR=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -63,7 +66,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --run-dir)
             RUN_DIR="$2"
+            RESUME_DOCTOR=1
             shift 2
+            ;;
+        --skip-resume-doctor)
+            RESUME_DOCTOR=0
+            shift
             ;;
         *)
             # Everything else is a coordinator arg
@@ -92,6 +100,7 @@ echo "  gpus: $NUM_GPUS"
 echo "  partition: $PARTITION"
 echo "  gpu type: $GPU_TYPE"
 echo "  time: $TIME"
+echo "  resume doctor: $RESUME_DOCTOR"
 echo "  coordinator args: $COORDINATOR_ARGS"
 
 sbatch \
@@ -105,7 +114,7 @@ sbatch \
     --time=$TIME \
     --output="${RUN_DIR}/slurm-%j.log" \
     --error="${RUN_DIR}/slurm-%j.err" \
-    --export=ALL,PROJECT_DIR="$PROJECT_DIR",RUN_DIR="$RUN_DIR",COORDINATOR_ARGS="$COORDINATOR_ARGS" \
+    --export=ALL,PROJECT_DIR="$PROJECT_DIR",RUN_DIR="$RUN_DIR",COORDINATOR_ARGS="$COORDINATOR_ARGS",RESUME_DOCTOR="$RESUME_DOCTOR" \
     "${SCRIPT_DIR}/coordinator.sh"
 
 echo "submitted! logs in $RUN_DIR"

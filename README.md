@@ -466,6 +466,10 @@ alphazero doctor --run-dir runs/coord_YYYYMMDD_HHMMSS
 The doctor fails nonzero for missing best/latest weights, unprovable
 best-model lineage, malformed promotion ledgers, or mismatches between the
 promotion ledger and `pipeline_state.yaml`.
+`submit_coordinator.sh --run-dir ...` runs this check inside the Slurm
+allocation before the coordinator starts. Use `--skip-resume-doctor` only for
+manual recovery work where you intentionally need to inspect or repair an
+unsafe run without continuing it.
 
 Current cluster limitations:
 - `training.train` is single-process; DDP helpers exist, but Slurm wrappers

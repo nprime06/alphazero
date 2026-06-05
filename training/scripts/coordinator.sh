@@ -5,6 +5,7 @@
 # Expected environment variables (set by submit_coordinator.sh):
 #   RUN_DIR          - self-contained run directory
 #   COORDINATOR_ARGS - arguments for orchestrator.coordinator
+#   RESUME_DOCTOR   - if 1, validate RUN_DIR before running coordinator
 
 set -euo pipefail
 
@@ -12,6 +13,7 @@ PROJECT_DIR="${PROJECT_DIR:-/home/willzhao/alphazero}"
 CONDA_ENV="${CONDA_ENV:-${PROJECT_DIR}/.conda/env}"
 RUN_DIR="${RUN_DIR:?RUN_DIR must be set by submit_coordinator.sh}"
 COORDINATOR_ARGS="${COORDINATOR_ARGS:-}"
+RESUME_DOCTOR="${RESUME_DOCTOR:-0}"
 
 cd "$PROJECT_DIR"
 
@@ -58,7 +60,16 @@ echo "  slurm job id: ${SLURM_JOB_ID:-manual}"
 echo "  node: $(hostname)"
 echo "  run dir: $RUN_DIR"
 echo "  coordinator args: $COORDINATOR_ARGS"
+echo "  resume doctor: $RESUME_DOCTOR"
 echo "  cuda visible devices: ${CUDA_VISIBLE_DEVICES:-not set}"
+
+if [[ "$RESUME_DOCTOR" == "1" && -f "$RUN_DIR/pipeline_state.yaml" ]]; then
+    echo "=== AlphaZero Run Doctor ==="
+    python -m orchestrator.doctor --run-dir "$RUN_DIR"
+elif [[ "$RESUME_DOCTOR" == "1" ]]; then
+    echo "resume doctor requested, but no existing pipeline_state.yaml was found"
+    echo "treating $RUN_DIR as a new coordinator run"
+fi
 
 python -m orchestrator.coordinator \
     --project-dir "$PROJECT_DIR" \
