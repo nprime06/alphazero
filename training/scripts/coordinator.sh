@@ -37,7 +37,7 @@ PY
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$PROJECT_DIR/neural:$PROJECT_DIR/training:$PROJECT_DIR/orchestrator:$PROJECT_DIR/alphazero:${PYTHONPATH:-}"
 export LIBTORCH_USE_PYTORCH=1
-export LD_LIBRARY_PATH="$TORCH_LIB:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$CONDA_ENV/lib:$TORCH_LIB:${LD_LIBRARY_PATH:-}"
 
 if [[ ! -x "$PROJECT_DIR/target/release/self-play" ]]; then
     echo "ERROR: missing $PROJECT_DIR/target/release/self-play" >&2

@@ -16,6 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CONDA_ENV="${CONDA_ENV:-${PROJECT_DIR}/.conda/env}"
 CONFIG_PATH="orchestrator/orchestrator/config_cluster_smoke.yaml"
 PREFLIGHT_ONLY=0
 RUN_PREFLIGHT=1
@@ -74,7 +75,7 @@ PY
 
     PYTHONPATH="$PROJECT_DIR/neural:$PROJECT_DIR/training:$PROJECT_DIR/orchestrator:$PROJECT_DIR/alphazero:${PYTHONPATH:-}" \
         LIBTORCH_USE_PYTORCH=1 \
-        LD_LIBRARY_PATH="$torch_lib:${LD_LIBRARY_PATH:-}" \
+        LD_LIBRARY_PATH="$CONDA_ENV/lib:$torch_lib:${LD_LIBRARY_PATH:-}" \
         "$python_bin" - <<'PY'
 from orchestrator.evaluate import _load_alphazero_py
 
