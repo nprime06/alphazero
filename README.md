@@ -246,11 +246,13 @@ orchestrator/
 │   ├── weights.py             # WeightPublisher: version + export TorchScript; WeightWatcher: detect updates
 │   ├── evaluate.py            # Model evaluation: Python or Rust/PyO3 MCTS backends
 │   ├── coordinator.py         # PipelineCoordinator: YAML config, persistent state, iteration loop
+│   ├── doctor.py              # Run integrity checks before cluster resume
 │   └── config.yaml            # Example pipeline configuration
 └── tests/
     ├── test_weights.py        # Publish/watch cycle, versioning, cleanup
     ├── test_evaluate.py       # ELO calculation, game playing, move conversion
-    └── test_coordinator.py    # Config loading, state persistence, dry run, iteration control
+    ├── test_coordinator.py    # Config loading, state persistence, dry run, iteration control
+    └── test_doctor.py         # Run-resume integrity and promotion-ledger checks
 ```
 
 **80 tests.**
@@ -454,6 +456,16 @@ bash training/scripts/submit_selfplay.sh \
     --games 1000 \
     --output /path/to/data
 ```
+
+Before resuming a coordinator run, inspect its artifact/state consistency:
+
+```bash
+alphazero doctor --run-dir runs/coord_YYYYMMDD_HHMMSS
+```
+
+The doctor fails nonzero for missing best/latest weights, unprovable
+best-model lineage, malformed promotion ledgers, or mismatches between the
+promotion ledger and `pipeline_state.yaml`.
 
 Current cluster limitations:
 - `training.train` is single-process; DDP helpers exist, but Slurm wrappers

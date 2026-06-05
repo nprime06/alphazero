@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import logging
 import os
 import shutil
@@ -327,6 +328,7 @@ class Coordinator:
             self._checkpoint_dir = self._run_dir / "checkpoints"
             self._tensorboard_dir = self._run_dir / "tensorboard"
             self._state_path = self._run_dir / "pipeline_state.yaml"
+            self._promotion_ledger_path = self._run_dir / "promotion_ledger.jsonl"
         else:
             self._run_dir = None
             self._data_dir = config.resolve_path(config.data_dir)
@@ -334,6 +336,9 @@ class Coordinator:
             self._checkpoint_dir = config.resolve_path(config.checkpoint_dir)
             self._tensorboard_dir = None
             self._state_path = self._checkpoint_dir / "pipeline_state.yaml"
+            self._promotion_ledger_path = (
+                self._checkpoint_dir / "promotion_ledger.jsonl"
+            )
 
         # Ensure directories exist
         for d in [self._data_dir, self._weights_dir, self._checkpoint_dir]:
@@ -742,6 +747,13 @@ class Coordinator:
                 "No previous best model. Auto-promoting v%d.",
                 latest_version,
             )
+            self._record_promotion_decision(
+                candidate_version=latest_version,
+                incumbent_version=0,
+                decision="promote",
+                reason="initial_model",
+                result=None,
+            )
             return True
 
         if latest_version == self.state.best_model_version:
@@ -797,12 +809,26 @@ class Coordinator:
                 result.a_win_rate * 100,
                 self.config.eval_win_threshold * 100,
             )
+            self._record_promotion_decision(
+                candidate_version=latest_version,
+                incumbent_version=self.state.best_model_version,
+                decision="promote",
+                reason="win_threshold_met",
+                result=result,
+            )
             return True
         else:
             logger.info(
                 "New model wins %.1f%% < %.1f%% threshold. Keeping current best.",
                 result.a_win_rate * 100,
                 self.config.eval_win_threshold * 100,
+            )
+            self._record_promotion_decision(
+                candidate_version=latest_version,
+                incumbent_version=self.state.best_model_version,
+                decision="keep",
+                reason="win_threshold_not_met",
+                result=result,
             )
             return False
 
@@ -811,6 +837,50 @@ class Coordinator:
         if self.state.best_model_version > 0:
             return [self.state.best_model_version]
         return []
+
+    def _record_promotion_decision(
+        self,
+        *,
+        candidate_version: int,
+        incumbent_version: int,
+        decision: str,
+        reason: str,
+        result: object | None,
+    ) -> None:
+        """Append an auditable promotion/evaluation decision."""
+        entry: dict[str, object] = {
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+            "iteration": self.state.iteration,
+            "candidate_version": candidate_version,
+            "incumbent_version": incumbent_version,
+            "decision": decision,
+            "reason": reason,
+            "eval_games": self.config.eval_games,
+            "eval_simulations": self.config.eval_simulations,
+            "eval_win_threshold": self.config.eval_win_threshold,
+            "eval_backend": self.config.eval_backend,
+            "eval_max_moves": self.config.eval_max_moves,
+        }
+        if result is not None:
+            entry.update(
+                {
+                    "a_wins": getattr(result, "a_wins", None),
+                    "b_wins": getattr(result, "b_wins", None),
+                    "draws": getattr(result, "draws", None),
+                    "total_games": getattr(result, "total_games", None),
+                    "a_win_rate": getattr(result, "a_win_rate", None),
+                    "elo_difference": (
+                        result.elo_difference()
+                        if hasattr(result, "elo_difference")
+                        else None
+                    ),
+                }
+            )
+
+        self._promotion_ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._promotion_ledger_path, "a") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
+        logger.info("Promotion decision recorded: %s", self._promotion_ledger_path)
 
     # ------------------------------------------------------------------ #
     # Model promotion

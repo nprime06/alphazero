@@ -625,6 +625,50 @@ def _cmd_pipeline(args: argparse.Namespace) -> None:
 
 
 # ============================================================================
+# Subcommand: doctor
+# ============================================================================
+
+
+def _add_doctor_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Register the ``doctor`` subcommand."""
+    p = subparsers.add_parser("doctor", help="Inspect a coordinator run")
+    p.add_argument(
+        "--run-dir",
+        required=True,
+        help="Coordinator run directory to inspect",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON",
+    )
+    p.set_defaults(func=_cmd_doctor)
+
+
+def _cmd_doctor(args: argparse.Namespace) -> None:
+    """Execute the ``doctor`` subcommand."""
+    try:
+        from orchestrator.doctor import format_report, inspect_run
+    except ImportError as exc:
+        print(
+            f"Error: required package not available: {exc}\n"
+            "Install with: pip install -e orchestrator/",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    report = inspect_run(args.run_dir)
+    if args.json:
+        import json
+
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(format_report(report))
+    if not report.ok:
+        sys.exit(1)
+
+
+# ============================================================================
 # Subcommand: export
 # ============================================================================
 
@@ -714,6 +758,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_play_parser(subparsers)
     _add_analyze_parser(subparsers)
     _add_pipeline_parser(subparsers)
+    _add_doctor_parser(subparsers)
     _add_export_parser(subparsers)
 
     return parser

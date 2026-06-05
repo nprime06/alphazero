@@ -33,7 +33,16 @@ def parser():
 
 @pytest.mark.parametrize(
     "subcmd",
-    ["train", "self-play", "evaluate", "play", "analyze", "pipeline", "export"],
+    [
+        "train",
+        "self-play",
+        "evaluate",
+        "play",
+        "analyze",
+        "pipeline",
+        "doctor",
+        "export",
+    ],
 )
 def test_subcommand_help(subcmd: str, capsys):
     """``alphazero <subcmd> --help`` should exit(0) with usage text."""
@@ -307,6 +316,29 @@ class TestPipelineArgs:
 
 
 # ============================================================================
+# doctor: argument parsing
+# ============================================================================
+
+
+class TestDoctorArgs:
+    """Verify argument parsing for the ``doctor`` subcommand."""
+
+    def test_defaults_with_required(self, parser):
+        args = parser.parse_args(["doctor", "--run-dir", "/tmp/run"])
+        assert args.command == "doctor"
+        assert args.run_dir == "/tmp/run"
+        assert args.json is False
+
+    def test_json(self, parser):
+        args = parser.parse_args(["doctor", "--run-dir", "/tmp/run", "--json"])
+        assert args.json is True
+
+    def test_missing_run_dir_exits(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["doctor"])
+
+
+# ============================================================================
 # export: argument parsing
 # ============================================================================
 
@@ -519,6 +551,34 @@ class TestExecutingSubcommands:
         assert "maturin develop --manifest-path alphazero-py/Cargo.toml" in (
             capsys.readouterr().err
         )
+
+    def test_doctor_exits_nonzero_when_report_has_errors(self, monkeypatch, capsys):
+        issue = SimpleNamespace(
+            severity="ERROR",
+            code="BEST_WEIGHT_MISSING",
+            message="missing",
+            path=None,
+        )
+        report = SimpleNamespace(
+            ok=False,
+            to_dict=lambda: {"ok": False},
+            run_dir="/tmp/run",
+            latest_version=0,
+            weight_versions=[],
+            game_files=0,
+            checkpoint_files=0,
+            ledger_entries=0,
+            state=None,
+            issues=[issue],
+        )
+        monkeypatch.setattr("orchestrator.doctor.inspect_run", lambda path: report)
+        monkeypatch.setattr("orchestrator.doctor.format_report", lambda value: "FAILED")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["doctor", "--run-dir", "/tmp/run"])
+
+        assert exc_info.value.code == 1
+        assert "FAILED" in capsys.readouterr().out
 
 
 # ============================================================================

@@ -7,6 +7,7 @@ without actually running self-play or training.
 from __future__ import annotations
 
 import os
+import json
 from types import SimpleNamespace
 
 import yaml
@@ -390,6 +391,81 @@ class TestCoordinator:
             coordinator._run_evaluation()
 
         assert "Refusing to auto-promote v4" in str(exc_info.value)
+
+    def test_run_evaluation_records_initial_promotion(self, tmp_path, monkeypatch):
+        """The first promotion is written to the append-only ledger."""
+        monkeypatch.setattr(Coordinator, "_bootstrap_model", lambda self: None)
+        config = self._make_config(tmp_path, dry_run=False, run_dir=str(tmp_path / "run"))
+        coordinator = Coordinator(config)
+        coordinator.state.best_model_version = 0
+
+        weights_dir = tmp_path / "run" / "weights"
+        (weights_dir / "latest.txt").write_text("1")
+        (weights_dir / "model_v000001.pt").write_bytes(b"candidate")
+
+        assert coordinator._run_evaluation() is True
+
+        ledger_path = tmp_path / "run" / "promotion_ledger.jsonl"
+        entry = json.loads(ledger_path.read_text().strip())
+        assert entry["iteration"] == 0
+        assert entry["candidate_version"] == 1
+        assert entry["incumbent_version"] == 0
+        assert entry["decision"] == "promote"
+        assert entry["reason"] == "initial_model"
+
+    def test_run_evaluation_records_keep_decision(
+        self, tmp_path, monkeypatch
+    ):
+        """Evaluation outcomes are auditable even when a candidate is rejected."""
+        monkeypatch.setattr(Coordinator, "_bootstrap_model", lambda self: None)
+        config = self._make_config(
+            tmp_path,
+            dry_run=False,
+            run_dir=str(tmp_path / "run"),
+            eval_win_threshold=0.75,
+        )
+        coordinator = Coordinator(config)
+        coordinator.state.best_model_version = 1
+        coordinator.state.iteration = 4
+
+        weights_dir = tmp_path / "run" / "weights"
+        (weights_dir / "latest.txt").write_text("2")
+        (weights_dir / "model_v000001.pt").write_bytes(b"best")
+        (weights_dir / "model_v000002.pt").write_bytes(b"candidate")
+
+        class FakeResult:
+            a_wins = 1
+            b_wins = 2
+            draws = 1
+            total_games = 4
+
+            @property
+            def a_win_rate(self):
+                return 0.375
+
+            def elo_difference(self):
+                return -88.0
+
+            def summary(self):
+                return "fake summary"
+
+        monkeypatch.setattr(
+            "orchestrator.evaluate.evaluate_models",
+            lambda **kwargs: FakeResult(),
+        )
+        monkeypatch.setattr(coordinator, "_has_cuda", lambda: False)
+
+        assert coordinator._run_evaluation() is False
+
+        ledger_path = tmp_path / "run" / "promotion_ledger.jsonl"
+        entry = json.loads(ledger_path.read_text().strip())
+        assert entry["iteration"] == 4
+        assert entry["candidate_version"] == 2
+        assert entry["incumbent_version"] == 1
+        assert entry["decision"] == "keep"
+        assert entry["reason"] == "win_threshold_not_met"
+        assert entry["a_win_rate"] == 0.375
+        assert entry["elo_difference"] == -88.0
 
     def test_run_selfplay_builds_real_command_with_torch_env(
         self, tmp_path, monkeypatch
