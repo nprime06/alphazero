@@ -40,6 +40,23 @@ RESUME_DOCTOR=0
 
 STATUS_DIR="${PROJECT_DIR}/runs/slurm_setup"
 STATUS_FILE="${STATUS_DIR}/latest_orcd_jobs.txt"
+MAX_TIME_SECONDS=$((6 * 60 * 60))
+
+time_to_seconds() {
+    local value="$1"
+    local hours minutes seconds
+
+    if [[ "$value" =~ ^([0-9]+):([0-9]{2}):([0-9]{2})$ ]]; then
+        hours="${BASH_REMATCH[1]}"
+        minutes="${BASH_REMATCH[2]}"
+        seconds="${BASH_REMATCH[3]}"
+        echo $((10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds))
+        return 0
+    fi
+
+    echo "ERROR: unsupported --time format '$value'. Use HH:MM:SS." >&2
+    return 1
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -87,6 +104,12 @@ done
 if [[ "$NUM_GPUS" -ne 1 ]]; then
     echo "ERROR: the coordinator currently runs single-process training; DDP is not wired yet." >&2
     echo "Use --gpus 1 until distributed training is implemented." >&2
+    exit 2
+fi
+
+TIME_SECONDS="$(time_to_seconds "$TIME")"
+if [[ "$TIME_SECONDS" -gt "$MAX_TIME_SECONDS" ]]; then
+    echo "ERROR: coordinator wall time must be <= 6:00:00 for this ORCD account." >&2
     exit 2
 fi
 

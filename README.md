@@ -436,11 +436,7 @@ Submit cluster jobs through the wrappers:
 
 ```bash
 # Tiny one-GPU cluster smoke; writes a self-contained run under runs/
-bash training/scripts/submit_coordinator.sh \
-    --config orchestrator/orchestrator/config_cluster_smoke.yaml \
-    --gpus 1 \
-    --time 2:00:00 \
-    --eval-backend rust
+bash training/scripts/submit_cluster_smoke.sh
 
 # Standalone one-GPU training job. DDP is not wired yet; --gpus must stay 1.
 bash training/scripts/submit_train.sh \
