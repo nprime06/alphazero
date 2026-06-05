@@ -470,6 +470,10 @@ promotion ledger and `pipeline_state.yaml`.
 allocation before the coordinator starts. Use `--skip-resume-doctor` only for
 manual recovery work where you intentionally need to inspect or repair an
 unsafe run without continuing it.
+Coordinator submissions also write `runs/slurm_setup/latest_orcd_jobs.txt`
+with the Slurm job id, run directory, source commit, requested resources, and
+previous submitted coordinator job so monitors can recover state without
+scraping terminal output.
 
 Current cluster limitations:
 - `training.train` is single-process; DDP helpers exist, but Slurm wrappers
