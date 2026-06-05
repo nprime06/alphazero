@@ -24,6 +24,7 @@ def _run_script(
     tmp_path: Path,
     fake_sbatch: str = "123456.mock\n",
     fake_squeue: str = "",
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -37,7 +38,10 @@ def _run_script(
     env = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "PYTHON_BIN": "/usr/bin/true",
     }
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         args,
         cwd=PROJECT_ROOT,
@@ -140,6 +144,25 @@ def test_cluster_smoke_preflight_rejects_missing_selfplay_binary(tmp_path):
 
     assert result.returncode == 2
     assert "cargo build --release -p self-play" in result.stderr
+
+
+def test_cluster_smoke_preflight_rejects_broken_rust_eval_loader(tmp_path):
+    _ensure_fake_selfplay()
+    try:
+        result = _run_script(
+            [
+                "bash",
+                str(SCRIPTS / "submit_cluster_smoke.sh"),
+                "--preflight-only",
+            ],
+            tmp_path=tmp_path,
+            extra_env={"PYTHON_BIN": "/usr/bin/false"},
+        )
+    finally:
+        _cleanup_fake_selfplay()
+
+    assert result.returncode == 2
+    assert "Rust evaluation loader failed" in result.stderr
 
 
 def test_cluster_smoke_submit_records_status(tmp_path):

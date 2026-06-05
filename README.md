@@ -456,6 +456,10 @@ bash training/scripts/submit_selfplay.sh \
     --output /path/to/data
 ```
 
+The clean-smoke preflight checks Slurm availability, absence of existing
+AlphaZero jobs, the compiled `self-play` binary, and the Rust evaluation
+loader used by the smoke configuration.
+
 Before resuming a coordinator run, inspect its artifact/state consistency:
 
 ```bash

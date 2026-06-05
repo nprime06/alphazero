@@ -45,13 +45,20 @@ if [[ ! -x "$PROJECT_DIR/target/release/self-play" ]]; then
     exit 1
 fi
 
-if ! python - <<'PY'
-import alphazero_py
+check_rust_eval_loader() {
+    python - <<'PY'
+from orchestrator.evaluate import _load_alphazero_py
+
+_load_alphazero_py()
 PY
+}
+
+if ! check_rust_eval_loader
 then
-    echo "alphazero_py not installed; building editable PyO3 extension"
+    echo "alphazero_py Rust evaluation loader failed; rebuilding editable PyO3 extension"
     python -m pip install -q maturin
     python -m maturin develop --manifest-path "$PROJECT_DIR/alphazero-py/Cargo.toml" --quiet
+    check_rust_eval_loader
 fi
 
 echo "=== AlphaZero Pipeline Coordinator ==="
