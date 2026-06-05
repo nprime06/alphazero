@@ -3,7 +3,6 @@
 #
 # USAGE:
 #   ./submit_train.sh --data-dir /path/to/data
-#   ./submit_train.sh --data-dir /path/to/data --gpus 2
 #   ./submit_train.sh --data-dir /path/to/data --run-dir /path/to/run  # resume
 #   ./submit_train.sh --dummy-data --network tiny --steps 1000          # smoke test
 #
@@ -12,7 +11,7 @@
 #   --partition NAME  Slurm partition (default: mit_normal_gpu)
 #   --gpu-type NAME   Slurm GPU type for --gres (default: h200)
 #   --run-dir DIR     Run directory (created if omitted, with timestamp)
-#   --time HH:MM:SS   Wall time limit (default: 12:00:00)
+#   --time HH:MM:SS   Wall time limit (default: 6:00:00, max: 6:00:00)
 #   --cpus-per-gpu N  CPUs per GPU (default: 8)
 #   --mem-per-gpu N   Memory per GPU in GB (default: 128)
 #   All other args are passed through to training.train
@@ -33,6 +32,23 @@ RUN_DIR=""
 
 # Separate our args from train args
 TRAIN_ARGS=""
+MAX_TIME_SECONDS=$((6 * 60 * 60))
+
+time_to_seconds() {
+    local value="$1"
+    local hours minutes seconds
+
+    if [[ "$value" =~ ^([0-9]+):([0-9]{2}):([0-9]{2})$ ]]; then
+        hours="${BASH_REMATCH[1]}"
+        minutes="${BASH_REMATCH[2]}"
+        seconds="${BASH_REMATCH[3]}"
+        echo $((10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds))
+        return 0
+    fi
+
+    echo "ERROR: unsupported --time format '$value'. Use HH:MM:SS." >&2
+    return 1
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -78,6 +94,12 @@ if [[ "$NUM_GPUS" -ne 1 ]]; then
     exit 2
 fi
 
+TIME_SECONDS="$(time_to_seconds "$TIME")"
+if [[ "$TIME_SECONDS" -gt "$MAX_TIME_SECONDS" ]]; then
+    echo "ERROR: training wall time must be <= 6:00:00 for this ORCD account." >&2
+    exit 2
+fi
+
 NUM_CPUS=$((NUM_GPUS * CPUS_PER_GPU))
 TOTAL_MEM=$((NUM_GPUS * MEM_PER_GPU))
 
@@ -94,6 +116,7 @@ echo "  gpus: $NUM_GPUS"
 echo "  partition: $PARTITION"
 echo "  gpu type: $GPU_TYPE"
 echo "  run dir: $RUN_DIR"
+echo "  time: $TIME"
 echo "  train args: $TRAIN_ARGS"
 
 sbatch \

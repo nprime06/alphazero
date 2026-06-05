@@ -19,6 +19,23 @@ NUM_CPUS=10
 MEM=64
 TIME="6:00:00"
 SELFPLAY_ARGS=""
+MAX_TIME_SECONDS=$((6 * 60 * 60))
+
+time_to_seconds() {
+    local value="$1"
+    local hours minutes seconds
+
+    if [[ "$value" =~ ^([0-9]+):([0-9]{2}):([0-9]{2})$ ]]; then
+        hours="${BASH_REMATCH[1]}"
+        minutes="${BASH_REMATCH[2]}"
+        seconds="${BASH_REMATCH[3]}"
+        echo $((10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds))
+        return 0
+    fi
+
+    echo "ERROR: unsupported --time format '$value'. Use HH:MM:SS." >&2
+    return 1
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -49,13 +66,27 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "$NUM_GPUS" -ne 1 ]]; then
+    echo "ERROR: self-play currently uses one GPU for inference." >&2
+    echo "Use --gpus 1 until multi-GPU self-play is implemented." >&2
+    exit 2
+fi
+
+TIME_SECONDS="$(time_to_seconds "$TIME")"
+if [[ "$TIME_SECONDS" -gt "$MAX_TIME_SECONDS" ]]; then
+    echo "ERROR: self-play wall time must be <= 6:00:00 for this ORCD account." >&2
+    exit 2
+fi
+
 RUN_DIR="${PROJECT_DIR}/runs/selfplay_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$RUN_DIR"
 
 echo "=== Submitting AlphaZero Self-Play ==="
 echo "  run dir: $RUN_DIR"
+echo "  gpus: $NUM_GPUS"
 echo "  partition: $PARTITION"
 echo "  gpu type: $GPU_TYPE"
+echo "  time: $TIME"
 echo "  selfplay args: $SELFPLAY_ARGS"
 
 sbatch \

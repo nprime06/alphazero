@@ -474,6 +474,10 @@ scraping terminal output.
 Current cluster limitations:
 - `training.train` is single-process; DDP helpers exist, but Slurm wrappers
   intentionally reject `--gpus > 1`.
+- Standalone self-play currently uses one GPU for inference; its Slurm wrapper
+  also rejects `--gpus > 1`.
+- Coordinator, training, and self-play wrappers reject wall times over
+  `6:00:00` for the current ORCD account limit.
 - The coordinator currently runs as one Slurm job that invokes local self-play,
   training, and evaluation phases. It does not yet submit separate job arrays
   for self-play workers or distributed training.
