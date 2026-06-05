@@ -438,6 +438,9 @@ Submit cluster jobs through the wrappers:
 # Tiny one-GPU cluster smoke; writes a self-contained run under runs/
 bash training/scripts/submit_cluster_smoke.sh
 
+# Preflight without submitting
+bash training/scripts/submit_cluster_smoke.sh --preflight-only
+
 # Standalone one-GPU training job. DDP is not wired yet; --gpus must stay 1.
 bash training/scripts/submit_train.sh \
     --gpus 1 \
