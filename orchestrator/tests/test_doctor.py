@@ -57,6 +57,7 @@ def test_inspect_run_accepts_auditable_state(tmp_path):
     report = inspect_run(run_dir)
 
     assert report.ok is True
+    assert report.recommendation == "safe_to_resume"
     assert report.latest_version == 2
     assert report.weight_versions == [1, 2]
     assert report.game_files == 2
@@ -76,6 +77,7 @@ def test_inspect_run_flags_missing_best_weight(tmp_path):
     report = inspect_run(run_dir)
 
     assert report.ok is False
+    assert report.recommendation == "repair_or_start_clean"
     assert {issue.code for issue in report.issues} >= {
         "BEST_WEIGHT_MISSING",
         "PROMOTION_LEDGER_MISSING",
@@ -93,6 +95,7 @@ def test_inspect_run_requires_promotion_ledger_for_non_initial_best(tmp_path):
     report = inspect_run(run_dir)
 
     assert report.ok is False
+    assert report.recommendation == "repair_or_start_clean"
     assert any(issue.code == "PROMOTION_LEDGER_MISSING" for issue in report.issues)
 
 
@@ -109,6 +112,7 @@ def test_inspect_run_flags_ledger_state_mismatch(tmp_path):
     report = inspect_run(run_dir)
 
     assert report.ok is False
+    assert report.recommendation == "repair_or_start_clean"
     assert any(issue.code == "PROMOTION_LEDGER_MISMATCH" for issue in report.issues)
 
 
@@ -123,4 +127,27 @@ def test_inspect_run_flags_latest_weight_missing(tmp_path):
     report = inspect_run(run_dir)
 
     assert report.ok is False
+    assert report.recommendation == "repair_or_start_clean"
     assert any(issue.code == "LATEST_WEIGHT_MISSING" for issue in report.issues)
+
+
+def test_inspect_run_recommends_clean_start_for_missing_run(tmp_path):
+    report = inspect_run(tmp_path / "missing")
+
+    assert report.ok is False
+    assert report.recommendation == "start_clean_run"
+
+
+def test_inspect_run_recommends_review_for_warnings(tmp_path):
+    run_dir = tmp_path / "run"
+    (run_dir / "data").mkdir(parents=True)
+    (run_dir / "checkpoints").mkdir()
+    _write_state(run_dir, best_model_version=1, iteration=1, total_games=99)
+    _write_weight(run_dir, 1)
+    (run_dir / "weights" / "latest.txt").write_text("1")
+
+    report = inspect_run(run_dir)
+
+    assert report.ok is True
+    assert report.recommendation == "review_warnings_then_resume"
+    assert any(issue.code == "GAME_COUNT_MISMATCH" for issue in report.issues)

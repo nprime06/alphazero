@@ -33,6 +33,7 @@ class RunDoctorReport:
     """Structured result from inspecting a run directory."""
 
     run_dir: str
+    recommendation: str
     state: dict[str, int] | None
     latest_version: int
     weight_versions: list[int]
@@ -166,6 +167,33 @@ def _ledger_best_version(entries: list[dict[str, Any]]) -> int | None:
     return best
 
 
+def _recommendation(issues: list[DoctorIssue]) -> str:
+    """Return the next safe campaign action implied by doctor issues."""
+    if not issues:
+        return "safe_to_resume"
+
+    error_codes = {
+        issue.code for issue in issues if issue.severity == "ERROR"
+    }
+    if not error_codes:
+        return "review_warnings_then_resume"
+
+    if error_codes <= {"RUN_DIR_MISSING", "RUN_DIR_NOT_DIRECTORY"}:
+        return "start_clean_run"
+
+    repairable_lineage_codes = {
+        "BEST_WEIGHT_MISSING",
+        "LATEST_WEIGHT_MISSING",
+        "PROMOTED_WEIGHT_MISSING",
+        "PROMOTION_LEDGER_MISSING",
+        "PROMOTION_LEDGER_MISMATCH",
+    }
+    if error_codes & repairable_lineage_codes:
+        return "repair_or_start_clean"
+
+    return "do_not_resume"
+
+
 def inspect_run(run_dir: str | Path) -> RunDoctorReport:
     """Inspect a coordinator run directory for resumability hazards."""
     root = Path(run_dir)
@@ -182,6 +210,7 @@ def inspect_run(run_dir: str | Path) -> RunDoctorReport:
         )
         return RunDoctorReport(
             run_dir=str(root),
+            recommendation=_recommendation(issues),
             state=None,
             latest_version=0,
             weight_versions=[],
@@ -351,6 +380,7 @@ def inspect_run(run_dir: str | Path) -> RunDoctorReport:
 
     return RunDoctorReport(
         run_dir=str(root),
+        recommendation=_recommendation(issues),
         state=asdict(state) if state is not None else None,
         latest_version=latest_version,
         weight_versions=weight_versions,
@@ -366,6 +396,7 @@ def format_report(report: RunDoctorReport) -> str:
     lines = [
         f"Run: {report.run_dir}",
         f"Status: {'OK' if report.ok else 'FAILED'}",
+        f"Recommendation: {report.recommendation}",
         f"Latest weight: v{report.latest_version}" if report.latest_version else "Latest weight: none",
         f"Weights: {len(report.weight_versions)} files",
         f"Games: {report.game_files}",
